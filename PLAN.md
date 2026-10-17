@@ -125,3 +125,8 @@ server/Dockerfile, render.yaml, fly.toml
 ## Addendum (M1)
 - **Owner requirement: the architecture must allow a later move to a central (dedicated) server.** Done by making the rules a headless `sim` crate and treating "host" as a role. In M2 the host logic lives in one struct (`Host`: inputs by player id -> `World::step` -> snapshots) that does not know whether it runs in a browser or on a server; the relay then simply becomes "relay + Host".
 - `game/src/sim.rs` became the `sim/` crate. Game-side code is split by concern: `view` (camera, letterbox, glow), `controls` (devices -> `Input`), `effects` (cosmetic state built from events), `draw` (reads the world), `main` (loop).
+
+## Addendum (M2 step 1)
+- Two more crates besides `sim`: `protocol` (messages, byte encoding, client `Replica`) and `host` (the authority as a message-in/message-out struct). The relay `server` crate comes in step 2 and does not link `host`.
+- Offline play now runs the whole online pipeline over an in-memory `Loopback` (Input -> Host -> Snapshot -> Replica -> draw), so going online only swaps the wire.
+- Steps re-sliced: step 1 already carries inputs and snapshots (original steps 3 and 4) over loopback. Remaining: 2 relay with rooms, 3 host/join over the relay (play with a friend), 4 snapshot rate and bandwidth, 5 client interpolation, then `docs/NETWORKING.md` and deploy.

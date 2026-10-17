@@ -125,6 +125,11 @@ pub fn draw_hud(world: &World, me: usize) {
     }
 }
 
+/// Bytes per second the wire carries, so you can see what the netcode costs.
+pub fn draw_net_stats(down: f32, up: f32) {
+    draw_text(&format!("net  in {:.1} KB/s   out {:.1} KB/s", down / 1024.0, up / 1024.0), 930.0, 22.0, 18.0, GRAY);
+}
+
 fn center_text(text: &str, y: f32, size: f32, color: Color) {
     let dim = measure_text(text, None, size as u16, 1.0);
     draw_text(text, (sim::TILE * sim::MAP_W as f32 - dim.width) / 2.0, y, size, color);
