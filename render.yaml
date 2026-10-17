@@ -1,0 +1,16 @@
+# Render "Blueprint": tells Render how to run the relay. In the Render
+# dashboard: New -> Blueprint -> pick this repo. See docs/DEPLOY.md.
+#
+# Free plan: the service falls asleep after 15 minutes without incoming
+# traffic and takes about a minute to wake on the next connection. Hosts send a
+# small keep-alive ping every 20 s, so it stays awake while someone is hosting.
+services:
+  - type: web
+    name: neon-bomber-relay
+    runtime: docker
+    plan: free
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: .
+    # "/" answers with a short text page (see server/src/lib.rs).
+    healthCheckPath: /
+    autoDeployTrigger: commit

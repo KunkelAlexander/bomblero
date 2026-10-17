@@ -1,0 +1,7 @@
+# Keep the build context small: none of this is needed to compile the relay.
+target
+.git
+web
+screenshots
+docs
+.playwright-mcp

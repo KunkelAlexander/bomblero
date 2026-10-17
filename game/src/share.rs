@@ -29,9 +29,17 @@ use crate::socket::SocketState;
 /// memory and keeps all 60.
 const SEND_EVERY: u32 = 2;
 
+/// Ping the relay this often (in host ticks: 20 s). A host alone in its room
+/// would otherwise send nothing at all, and an idle WebSocket is cut by the
+/// proxies of hosting services, which also let a free server fall asleep after
+/// 15 minutes without incoming messages. A tiny ping is the cheapest "I am
+/// still here" there is.
+const KEEPALIVE_TICKS: u32 = 20 * 60;
+
 pub struct Share {
     link: RelayLink,
     throttle: Throttle,
+    ticks_since_ping: u32,
     /// Have we asked the relay for a room yet? (Only possible once it is open.)
     asked: bool,
     code: Option<String>,
@@ -52,6 +60,7 @@ impl Share {
         Share {
             link: RelayLink::connect(RELAY_URL),
             throttle: Throttle::new(SEND_EVERY),
+            ticks_since_ping: 0,
             asked: false,
             code: None,
             peers: HashMap::new(),
@@ -94,6 +103,12 @@ impl Share {
         if !self.asked {
             self.asked = true;
             self.link.send(&ToRelay::CreateRoom);
+        }
+
+        self.ticks_since_ping += 1;
+        if self.ticks_since_ping >= KEEPALIVE_TICKS {
+            self.ticks_since_ping = 0;
+            self.link.send(&ToRelay::Ping { token: 0 });
         }
 
         while let Some(msg) = self.link.recv() {

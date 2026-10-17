@@ -156,3 +156,10 @@ server/Dockerfile, render.yaml, fly.toml
 - Delay 0 = no interpolation: the local host player keeps zero extra lag. Joiners start with 6; the I key toggles it so the effect can be seen.
 - Cost: the joiner sees everything, including their own player, ~100 ms in the past on top of the network round trip. Cutting that for the own player is what client-side prediction would do (M5, only if it feels bad).
 - Not done: a fake-lag/jitter option. On localhost there is no jitter, so the buffer's real job (absorbing late packets) is only unit-tested until we play over the internet.
+
+## Addendum (M2 step 6: docs and deploy files)
+- `docs/NETWORKING.md` (how a key press reaches a friend's screen, every concept, limits) and `docs/DEPLOY.md` (relay on Render, game on Pages, Fly alternative) written.
+- Deploy files, all unrun on real hosts: `server/Dockerfile` (build from repo root, LTO off for the build, same Debian release in both stages), `.dockerignore`, `render.yaml` (free plan, health check `/`), `fly.toml` (one machine only: rooms live in memory). The Pages workflow now reads `RELAY_URL` from a repo variable (unset = local relay).
+- `Share` pings the relay every 20 s: a host alone in a room would otherwise send nothing, and idle WebSockets get cut / free Render services sleep after 15 min without incoming messages (checked against Render's docs, Oct 2026).
+- Not verifiable here: the Docker build (no Docker installed; the exact cargo command inside it was run natively with `--locked` and LTO off and works) and the real deploy (needs a GitHub remote and a Render account: user actions).
+- Known limit: the native client has no TLS, so only the browser build can use a `wss://` relay.

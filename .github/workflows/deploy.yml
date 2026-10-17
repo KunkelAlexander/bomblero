@@ -17,7 +17,16 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p game --release --target wasm32-unknown-unknown
+      # The game finds the relay through RELAY_URL, fixed at build time (see
+      # game/src/net.rs). Set it once in the repo: Settings -> Secrets and
+      # variables -> Actions -> Variables -> RELAY_URL = wss://<your relay>/ws
+      # Unset, the game would try ws://127.0.0.1 and only work locally.
+      - name: Build the game
+        env:
+          RELAY_URL: ${{ vars.RELAY_URL }}
+        run: |
+          if [ -z "$RELAY_URL" ]; then unset RELAY_URL; fi
+          cargo build -p game --release --target wasm32-unknown-unknown
       - run: cp target/wasm32-unknown-unknown/release/game.wasm web/game.wasm
       - uses: actions/upload-pages-artifact@v3
         with:

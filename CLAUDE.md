@@ -83,6 +83,7 @@ Top-down, real-time arena shooter ("Bomberman meets Liero") in a neon style. Rus
 - Native: `cargo run -p game --release`
 - Web build: `cargo build -p game --release --target wasm32-unknown-unknown`, then serve `web/` (see `web/README` once it exists, or `python -m http.server` in `web/`).
 - Relay server: `cargo run -p server --release` (port 9001, or $PORT). The game connects to `ws://127.0.0.1:9001/ws` unless built with `RELAY_URL=wss://...`.
+- Deploy: see `docs/DEPLOY.md` (relay on Render/Fly via `server/Dockerfile`, game on GitHub Pages; `RELAY_URL` is a build-time setting). How the netcode works: `docs/NETWORKING.md`.
 - Tests: `cargo test` (sim, protocol and host tests are headless: no window or GPU needed)
 
 ## Plan
