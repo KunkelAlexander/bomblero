@@ -15,20 +15,24 @@
 //     join()                  -> Welcome        a new player arrives
 //     leave(id)                                 a player goes away
 //     handle(id, ClientMsg)                     a message arrived from player `id`
-//     tick()                  -> Option<HostMsg>  advance 1/60 s; maybe a snapshot
+//     tick()                  -> Snapshot       advance 1/60 s; the world afterwards
 //
 // The code around it moves bytes between these calls and the wire.
+//
+// `tick` returns a snapshot EVERY tick. How often a snapshot is really sent is
+// a property of each link (the local player can have all 60 per second for
+// free, a friend across the internet gets fewer), so it is decided by whoever
+// owns the link, using a `Throttle`.
 
-use protocol::{ClientMsg, HostMsg, PlayerId, Snapshot, Welcome};
+pub mod throttle;
+
+pub use throttle::Throttle;
+
+use protocol::{ClientMsg, PlayerId, Snapshot, Welcome};
 use sim::bots::Bot;
 use sim::tilemap::{Tilemap, MAP_GRID};
 use sim::weapons::{BLASTER, RAILGUN, ROCKET};
 use sim::{Event, Input, World};
-
-/// Send a snapshot every N sim ticks. 1 = 60 per second. Online we will send
-/// fewer (every 2 = 30/s) to save bandwidth and interpolate on the client; the
-/// trade-off is explained where that happens.
-const SNAPSHOT_EVERY: u32 = 1;
 
 /// Who drives a player slot.
 ///
@@ -45,9 +49,6 @@ enum Controller {
 pub struct Host {
     world: World,
     controllers: Vec<Controller>,
-    /// Events produced since the last snapshot. Snapshots can be sent less
-    /// often than ticks, so events pile up here until one goes out.
-    pending_events: Vec<Event>,
     seed: u32,
 }
 
@@ -56,7 +57,7 @@ impl Host {
     pub fn new(slots: usize, seed: u32) -> Host {
         let world = World::new(Tilemap::from_ascii(MAP_GRID), slots, &[BLASTER, ROCKET, RAILGUN], seed);
         let controllers = (0..slots).map(|i| Controller::Bot(bot_for(seed, i))).collect();
-        Host { world, controllers, pending_events: Vec::new(), seed }
+        Host { world, controllers, seed }
     }
 
     /// A human arrives: give them the first slot a bot is holding.
@@ -64,7 +65,9 @@ impl Host {
     pub fn join(&mut self) -> Option<Welcome> {
         let slot = self.controllers.iter().position(|c| matches!(c, Controller::Bot(_)))?;
         self.controllers[slot] = Controller::Human(Input::default());
-        Some(Welcome { you: slot as PlayerId, tiles: self.world.map.tiles().to_vec(), snapshot: self.snapshot() })
+        // No events: the tiles above are already up to date, and replaying
+        // explosions from before the newcomer arrived would be wrong.
+        Some(Welcome { you: slot as PlayerId, tiles: self.world.map.tiles().to_vec(), snapshot: self.snapshot(Vec::new()) })
     }
 
     /// A human goes away: a bot takes the slot back, so the match carries on.
@@ -95,9 +98,9 @@ impl Host {
         }
     }
 
-    /// Advance the match by one tick. Returns a message to broadcast to every
-    /// player when a snapshot is due.
-    pub fn tick(&mut self) -> Option<HostMsg> {
+    /// Advance the match by one tick. Returns the world as it is now, plus the
+    /// events of this tick. Sending it (or not) is up to the caller.
+    pub fn tick(&mut self) -> Snapshot {
         // Pattern: Command. Bots and humans both turn into the same `Input`.
         // A human whose packet is late simply repeats their last input.
         let world = &self.world;
@@ -112,13 +115,8 @@ impl Host {
             .collect();
 
         self.world.step(&inputs);
-        self.pending_events.extend(self.world.drain_events());
-
-        if self.world.tick % SNAPSHOT_EVERY == 0 {
-            Some(HostMsg::Snapshot(self.snapshot()))
-        } else {
-            None
-        }
+        let events = self.world.drain_events();
+        self.snapshot(events)
     }
 
     /// Read-only view of the real world (for tests and debugging).
@@ -126,14 +124,13 @@ impl Host {
         &self.world
     }
 
-    fn snapshot(&mut self) -> Snapshot {
+    fn snapshot(&self, events: Vec<Event>) -> Snapshot {
         Snapshot {
             tick: self.world.tick,
             players: self.world.players.clone(),
             projectiles: self.world.projectiles.clone(),
             winner: self.world.winner,
-            // Taking the events empties the pile, so each event is sent once.
-            events: std::mem::take(&mut self.pending_events),
+            events,
         }
     }
 }
@@ -146,7 +143,7 @@ fn bot_for(seed: u32, slot: usize) -> Bot {
 mod tests {
     use super::*;
     use protocol::replica::Replica;
-    use protocol::{decode_host, encode_client, decode_client, encode_host};
+    use protocol::{decode_host, encode_client, decode_client, encode_host, HostMsg};
     use sim::vec2;
 
     /// Send a host message through the byte encoding, like a real wire would.
@@ -174,9 +171,7 @@ mod tests {
         for _ in 0..60 {
             let sent = decode_client(&encode_client(&ClientMsg::Input(input))).unwrap();
             host.handle(replica.me, sent);
-            if let Some(msg) = host.tick() {
-                replica.apply(over_the_wire(&msg));
-            }
+            replica.apply(over_the_wire(&HostMsg::Snapshot(host.tick())));
         }
 
         assert!(replica.world.players[0].pos.x > start_x + 50.0, "player 0 should have walked right");
@@ -196,9 +191,9 @@ mod tests {
         // without touching the host's own map, so that only the *event* can be
         // what changes the replica.
         assert_eq!(replica.world.map.get(5, 5), sim::Tile::Brick(3));
-        host.pending_events.push(Event::TileChanged { x: 5, y: 5, tile: sim::Tile::Empty });
-        let msg = host.tick().unwrap();
-        replica.apply(over_the_wire(&msg));
+        let mut snapshot = host.tick();
+        snapshot.events.push(Event::TileChanged { x: 5, y: 5, tile: sim::Tile::Empty });
+        replica.apply(over_the_wire(&HostMsg::Snapshot(snapshot)));
         assert_eq!(replica.world.map.get(5, 5), sim::Tile::Empty);
     }
 
@@ -227,6 +222,27 @@ mod tests {
         let forged = Input { fire: true, ..Input::default() };
         host.handle(1, ClientMsg::Input(forged));
         assert!(matches!(host.controllers[1], Controller::Bot(_)));
+    }
+
+    /// A bandwidth budget as a test: if someone adds a fat field to
+    /// `Snapshot`, this fails and the cost shows up before the players feel it.
+    #[test]
+    fn one_second_of_snapshots_fits_the_budget() {
+        let mut host = Host::new(4, 7);
+        let mut every_tick = 0;
+        let mut every_second_tick = 0;
+        let mut throttle = Throttle::new(2);
+        for _ in 0..60 {
+            let snapshot = host.tick();
+            every_tick += encode_host(&HostMsg::Snapshot(snapshot.clone())).len();
+            if let Some(s) = throttle.push(snapshot) {
+                every_second_tick += encode_host(&HostMsg::Snapshot(s)).len();
+            }
+        }
+        println!("60 snapshots/s: {every_tick} B/s,  30 snapshots/s: {every_second_tick} B/s");
+        assert!(every_tick < 30_000, "snapshots grew to {every_tick} B/s");
+        // Events ride along, so halving the rate saves a bit less than half.
+        assert!(every_second_tick * 10 < every_tick * 6);
     }
 
     #[test]

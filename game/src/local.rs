@@ -93,7 +93,8 @@ impl LocalGame {
     // ---- the host's half ----
 
     /// One 1/60 s tick: read the inputs that arrived, step the sim, and send
-    /// out a snapshot if one is due.
+    /// the result out: every tick to the local player (free, in-memory), and
+    /// to friends at the rate `Share` chooses.
     pub fn host_tick(&mut self) {
         if let Some(share) = &mut self.share {
             share.receive(&mut self.host);
@@ -101,12 +102,11 @@ impl LocalGame {
         while let Some(msg) = self.link.host_recv() {
             self.host.handle(self.peer, msg);
         }
-        if let Some(snapshot) = self.host.tick() {
-            self.link.host_send(&snapshot);
-            if let Some(share) = &mut self.share {
-                share.broadcast(&snapshot);
-            }
+        let snapshot = self.host.tick();
+        if let Some(share) = &mut self.share {
+            share.broadcast(snapshot.clone());
         }
+        self.link.host_send(&HostMsg::Snapshot(snapshot));
     }
 
     /// Bandwidth for the HUD. Once a room is open this is what the host really

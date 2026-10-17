@@ -11,15 +11,27 @@
 
 use std::collections::HashMap;
 
-use host::Host;
+use host::{Host, Throttle};
 use protocol::relay::PeerId;
-use protocol::{decode_client, encode_host, ClientMsg, FromRelay, HostMsg, PlayerId, ToRelay};
+use protocol::{decode_client, encode_host, ClientMsg, FromRelay, HostMsg, PlayerId, Snapshot, ToRelay};
 
 use crate::net::{RelayLink, RELAY_URL};
 use crate::socket::SocketState;
 
+/// Send friends a snapshot every N sim ticks: 2 = 30 per second.
+///
+/// The trade-off, in numbers (4 players, ~350 bytes per snapshot):
+///   1 -> 60/s -> ~21 KB/s of host upload, friends see 60 Hz steps
+///   2 -> 30/s -> ~10 KB/s,                friends see 30 Hz steps
+///   3 -> 20/s -> ~7 KB/s,                 friends see 20 Hz steps (visibly choppy)
+/// 30 is the usual compromise; interpolation (next step) hides the steps.
+/// Only the link to friends is throttled: the host's own player is wired in
+/// memory and keeps all 60.
+const SEND_EVERY: u32 = 2;
+
 pub struct Share {
     link: RelayLink,
+    throttle: Throttle,
     /// Have we asked the relay for a room yet? (Only possible once it is open.)
     asked: bool,
     code: Option<String>,
@@ -39,6 +51,7 @@ impl Share {
     pub fn open() -> Share {
         Share {
             link: RelayLink::connect(RELAY_URL),
+            throttle: Throttle::new(SEND_EVERY),
             asked: false,
             code: None,
             peers: HashMap::new(),
@@ -99,14 +112,20 @@ impl Share {
         }
     }
 
-    /// Tell every friend about the newest snapshot. One `Data { to: None }`
-    /// message: the relay copies it to everybody, so the host uploads each
-    /// snapshot once no matter how many friends there are.
-    pub fn broadcast(&mut self, msg: &HostMsg) {
+    /// Offer this tick's snapshot to the friends; every `SEND_EVERY`-th one
+    /// really goes out. One `Data { to: None }` message: the relay copies it
+    /// to everybody, so the host uploads each snapshot once no matter how many
+    /// friends there are.
+    pub fn broadcast(&mut self, snapshot: Snapshot) {
         if self.peers.is_empty() {
-            return; // nobody listening: do not spend upload on it
+            // Nobody listening: do not spend upload on it. Also forget the
+            // events held back for them. They are older than whatever a future
+            // joiner's `Welcome` will say, and replaying them would undo it.
+            self.throttle = Throttle::new(SEND_EVERY);
+            return;
         }
-        let bytes = encode_host(msg);
+        let Some(snapshot) = self.throttle.push(snapshot) else { return };
+        let bytes = encode_host(&HostMsg::Snapshot(snapshot));
         self.bytes_up += bytes.len() as u64;
         self.link.send(&ToRelay::Data { to: None, bytes });
     }
@@ -116,6 +135,8 @@ impl Share {
     pub fn welcome_again(&mut self, host: &mut Host) {
         let peers: Vec<PeerId> = self.peers.keys().copied().collect();
         self.peers.clear();
+        // Events held back from the old match must not leak into the new one.
+        self.throttle = Throttle::new(SEND_EVERY);
         for peer in peers {
             self.welcome(host, peer);
         }

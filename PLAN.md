@@ -142,3 +142,10 @@ server/Dockerfile, render.yaml, fly.toml
 - Joining is `game/src/join.rs` (pure client: Replica + inputs at most once per tick + ping). The old lobby screen was removed. `present.rs` draws a Replica for both paths.
 - New `HostMsg::Full` so a joiner is told when all 4 slots are taken.
 - Known limit: a hosting browser tab that is hidden is paused by the browser, so friends see the match freeze (a joiner measured a 35 s ping). The host must keep the tab visible, or the host role moves to a dedicated server.
+
+## Addendum (M2 step 4)
+- `Host::tick()` now returns a `Snapshot` every tick (no more `SNAPSHOT_EVERY` inside the host). The rate belongs to each *link*: the host's own player keeps 60/s over the in-memory loopback, friends get 30/s (`SEND_EVERY = 2` in `share.rs`).
+- `host::Throttle` thins the stream and moves the events of skipped ticks into the next snapshot that goes out (state can be skipped, events cannot). `Share` resets it when no friend is listening and on rematch, so stale events never reach a newcomer or a new match.
+- `Host::join()` no longer drains events (its Welcome snapshot carries none), which fixes the step-3 caveat.
+- Measured with a unit test (4 players): 24 KB/s at 60 snapshots/s, 12 KB/s at 30. A test keeps this under budget. Bandwidth is ~87 bytes per player per snapshot, mostly floats that change every tick, so quantising or delta-coding would save little for the complexity; deliberately not done. Per-friend rates were also skipped: they would end the single broadcast upload.
+- Consequence: friends now see the world in 30 Hz steps. Step 5 (interpolation) smooths that.
