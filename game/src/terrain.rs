@@ -7,8 +7,11 @@
 //     past (see `lights.rs`, which uses the `shine` texture baked here).
 //   * The floor is mottled stone, darker where it meets a wall (a contact
 //     shadow), so the walls look like they stand on it.
-//   * Bricks (destructible) are lighter, loose pebbles, one per tile, cut into
-//     three facets. The facets are the break lines: each hit knocks one off.
+//   * Bricks (destructible) are loose pebbles of the same polished stone, one
+//     per tile, a shade paler than the walls and cut into three facets. They
+//     rest on the floor in a soft shadow and glint towards the nearest light
+//     just like the walls do. The facets are the break lines: each hit knocks
+//     one off.
 //
 // Colour is saved for players and weapons, so they stand out against grey.
 //
@@ -25,7 +28,7 @@ use macroquad::prelude::*;
 use sim::tilemap::Tilemap;
 use sim::{Tile, MAP_H, MAP_W, TILE};
 
-use crate::lights::LIFT;
+use crate::lights::{Light, LIFT};
 
 const W: usize = MAP_W * TILE as usize;
 const H: usize = MAP_H * TILE as usize;
@@ -66,19 +69,16 @@ impl Terrain {
         self.shine.as_ref()
     }
 
-    pub fn draw(&self, map: &Tilemap) {
+    pub fn draw(&self, map: &Tilemap, lights: &[Light]) {
         // The ground is painted a lit grey and the lightmap darkens it (lights.rs):
         // a black floor would stay black under any light.
         if let Some(ground) = &self.ground {
             draw_texture(ground, 0.0, 0.0, WHITE);
         }
-        for ty in 0..MAP_H as i32 {
-            for tx in 0..MAP_W as i32 {
-                if let Tile::Brick(hp) = map.get(tx, ty) {
-                    draw_pebble(tx, ty, hp);
-                }
-            }
-        }
+        // Shadows first, for all bricks, so a brick's shadow never lands on top
+        // of its neighbour.
+        for_each_brick(map, |tx, ty, _| draw_shadow(tx, ty));
+        for_each_brick(map, |tx, ty, hp| draw_pebble(tx, ty, hp, lights));
     }
 }
 
@@ -243,7 +243,17 @@ fn box_blur(v: &mut [f32], radius: usize) {
 
 // ---- bricks: faceted pebbles ------------------------------------------------
 
-const OUTLINE: usize = 12; // points around a pebble
+fn for_each_brick(map: &Tilemap, mut f: impl FnMut(i32, i32, u8)) {
+    for ty in 0..MAP_H as i32 {
+        for tx in 0..MAP_W as i32 {
+            if let Tile::Brick(hp) = map.get(tx, ty) {
+                f(tx, ty, hp);
+            }
+        }
+    }
+}
+
+const OUTLINE: usize = 18; // points around a pebble
 const FACETS: usize = 3; // wedges; one per brick hit point
 const PER_FACET: usize = OUTLINE / FACETS;
 
@@ -274,12 +284,12 @@ fn pebble(tx: i32, ty: i32) -> Pebble {
         let a = turn + i as f32 * std::f32::consts::TAU / OUTLINE as f32;
         // A rounded square (a "squircle") fills the tile better than a circle,
         // and a little per-point wobble keeps the pebbles from looking stamped.
-        let n = 3.5;
+        let n = 3.0;
         let r = 14.0 / (a.cos().abs().powf(n) + a.sin().abs().powf(n)).powf(1.0 / n);
-        *point = vec2(a.cos(), a.sin()) * r * (0.9 + 0.1 * hash(tx, ty, 1 + i as i32));
+        *point = vec2(a.cos(), a.sin()) * r * (0.93 + 0.07 * hash(tx, ty, 1 + i as i32));
     }
     points[OUTLINE] = points[0];
-    Pebble { points, grey: 0.34 + 0.06 * hash(tx, ty, 99), turn }
+    Pebble { points, grey: 0.15 + 0.05 * hash(tx, ty, 99), turn }
 }
 
 /// Angle at the middle of wedge `k`.
@@ -287,27 +297,75 @@ fn wedge_angle(p: &Pebble, k: usize) -> f32 {
     p.turn + (k * PER_FACET + PER_FACET / 2) as f32 * std::f32::consts::TAU / OUTLINE as f32
 }
 
-/// Shade of wedge `k`: wedges that face the light (top left) are lighter, so
-/// the pebble reads as cut stone, not a flat blob.
+/// Shade of wedge `k`: wedges that face the (imagined) top left are a little
+/// lighter, so the pebble reads as cut stone, not a flat blob. Dark slate with a
+/// blue cast: the same polished stone as the walls, one step paler.
 fn wedge_color(p: &Pebble, k: usize) -> Color {
-    let g = p.grey + 0.1 * (wedge_angle(p, k) - (-2.36f32)).cos();
-    Color::new(g, g, g * 1.04, 1.0)
+    let g = p.grey + 0.05 * (wedge_angle(p, k) - (-2.36f32)).cos();
+    Color::new(g, g * 1.04, g * 1.14, 1.0)
+}
+
+/// A soft contact shadow, so the pebble rests on the floor like the walls
+/// stand on it. A few stacked translucent discs fake the blur; the offset says
+/// the (imagined) light is top left.
+fn draw_shadow(tx: i32, ty: i32) {
+    let c = vec2(tx as f32 + 0.5, ty as f32 + 0.5) * TILE + vec2(2.0, 3.0);
+    for (radius, alpha) in [(22.0, 0.10), (19.0, 0.12), (16.0, 0.16)] {
+        draw_poly(c.x, c.y, 16, radius, 0.0, Color::new(0.0, 0.0, 0.0, alpha));
+    }
+}
+
+/// The light that matters most to this pebble: strongest after distance
+/// falloff. Returns it with how much of its reach is left at the pebble.
+fn strongest_light(c: Vec2, lights: &[Light]) -> Option<(&Light, f32)> {
+    lights
+        .iter()
+        .map(|l| (l, l.strength * (1.0 - c.distance(l.pos) / l.radius)))
+        .filter(|(_, reach)| *reach > 0.0)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
 }
 
 /// A brick with `hp` hit points left has `hp` wedges. The wedges knocked off
 /// first are the highest numbered, and `Effects` flies them away as shards.
-fn draw_pebble(tx: i32, ty: i32, hp: u8) {
+fn draw_pebble(tx: i32, ty: i32, hp: u8, lights: &[Light]) {
     let p = pebble(tx, ty);
     let c = vec2(tx as f32 + 0.5, ty as f32 + 0.5) * TILE;
+    let glint = strongest_light(c, lights);
     for k in 0..(hp as usize).min(FACETS) {
+        // Domed: each facet is brightest in the middle and falls off towards the
+        // rim, which is what turns a flat grey shape into a polished pebble and
+        // gives it the same soft edge the walls have. The gradient is free: the
+        // GPU blends between vertex colours (one mesh per facet, a triangle fan).
         let w = wedge_color(&p, k);
-        let color = Color::new(w.r * LIFT, w.g * LIFT, w.b * LIFT, 1.0);
-        for i in k * PER_FACET..(k + 1) * PER_FACET {
-            draw_triangle(c, c + p.points[i], c + p.points[i + 1], color);
+        let shade = |m: f32| Color::new(w.r * LIFT * m, w.g * LIFT * m, w.b * LIFT * m, 1.0);
+        let mut vertices = vec![Vertex::new(c.x, c.y, 0.0, 0.0, 0.0, shade(1.35))];
+        for point in &p.points[k * PER_FACET..=(k + 1) * PER_FACET] {
+            vertices.push(Vertex::new(c.x + point.x, c.y + point.y, 0.0, 0.0, 0.0, shade(0.55)));
         }
+        let indices = (0..PER_FACET as u16).flat_map(|i| [0, i + 1, i + 2]).collect();
+        draw_mesh(&Mesh { vertices, indices, texture: None });
         // The seam: where the next hit will split it.
         let s = c + p.points[k * PER_FACET];
-        draw_line(c.x, c.y, s.x, s.y, 1.5, Color::new(0.06, 0.06, 0.07, 1.0));
+        draw_line(c.x, c.y, s.x, s.y, 1.2, Color::new(0.02, 0.02, 0.03, 0.75));
+
+        // Polish: a facet turned towards a light catches a bright rim in that
+        // light's colour, plus a tiny hot spot. Facing away, it stays dark.
+        // (Painted into the lit layer, so the lightmap also hides it where a
+        // wall shadows the light.)
+        if let Some((light, reach)) = glint {
+            let to_light = light.pos - c;
+            let facing = (wedge_angle(&p, k) - to_light.y.atan2(to_light.x)).cos().max(0.0).powi(3);
+            let strength = facing * reach.min(1.0);
+            if strength > 0.02 {
+                let edge = &p.points[k * PER_FACET..=(k + 1) * PER_FACET];
+                let rim = Color::new(light.color.r, light.color.g, light.color.b, (strength * 1.5).min(1.0));
+                for pair in edge.windows(2) {
+                    draw_line(c.x + pair[0].x, c.y + pair[0].y, c.x + pair[1].x, c.y + pair[1].y, 2.0, rim);
+                }
+                let spot = c + edge[PER_FACET / 2] * 0.8;
+                draw_circle(spot.x, spot.y, 2.0, Color::new(1.0, 1.0, 1.0, (strength * 1.2).min(1.0)));
+            }
+        }
     }
 }
 

@@ -66,7 +66,7 @@ impl Presenter {
         lights.extend_from_slice(extra);
 
         glow.begin();
-        self.terrain.draw(&replica.world.map);
+        self.terrain.draw(&replica.world.map, &lights);
         // Created on the first frame: it needs the graphics context.
         self.lights.get_or_insert_with(Lights::new).apply(glow, &replica.world.map, &lights, self.terrain.shine());
     }

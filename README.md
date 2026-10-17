@@ -22,7 +22,7 @@ shooting range in the middle is for trying the weapons first.*
 | ![Standing on a pad: the ring closes edge by edge in your colour.](docs/img/pad.png) | ![Joining: type the four-character room code.](docs/img/join.png) |
 | *Standing on a pad: the ring closes edge by edge in your colour.* | *JOIN asks for the room code.* |
 
-![A match against three bots: light pebbles can be shot away, the polished black walls cannot. Colour says who, orange says danger.](docs/img/match.png)
+![A match against three bots: the pebbles can be shot away, the polished black walls cannot. Colour says who, orange says danger.](docs/img/match.png)
 
 *A match against three bots. The pebbles break (one facet per hit); the black
 walls do not. Colour says who, orange says danger.*
@@ -45,8 +45,8 @@ weapon shows one segment per round, and the scoreboard marks you with your colou
 
 Early but playable. Done so far:
 
-* Free movement (WASD) with mouse aim, in a destructible tile arena: the light
-  grey pebbles break (one facet per hit), the dark rounded walls don't. The map
+* Free movement (WASD) with mouse aim, in a destructible tile arena: the
+  slate pebbles break (one facet per hit), the polished black walls don't. The map
   mixes L, T and Z walls, brick patches and an open middle.
 * Six weapons as rows of a data table: **Neon Blaster** (fast bolts),
   **Scatter** (shotgun), **Rocket** (explosion that digs a crater), **Bouncer**
