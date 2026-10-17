@@ -31,6 +31,11 @@ mod browser {
 
     // Implemented in JavaScript (web/net.js). The browser keeps one socket at
     // a time, which is all the game needs.
+    //
+    // `wasm_import_module` declares these as imports from the JS side. Without
+    // it they are "undefined symbols", which older Rust let through silently but
+    // current Rust's linker rejects (this broke the GitHub Actions build).
+    #[link(wasm_import_module = "env")]
     extern "C" {
         fn net_connect(url: *const u8, len: usize);
         fn net_state() -> i32;
