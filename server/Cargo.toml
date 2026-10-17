@@ -1,0 +1,17 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+protocol = { path = "../protocol" }
+axum = { version = "0.7", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+futures-util = "0.3"
+rand = "0.8"
+
+[dev-dependencies]
+# A plain blocking WebSocket client, for the end-to-end test.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+# The end-to-end test starts the server itself, so it needs the runtime too.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }

@@ -4,14 +4,14 @@
 #   protocol  message shapes + bytes, and the client's `Replica` of the world
 #   host      the authority: runs `sim`, takes inputs, makes snapshots
 #   game      the macroquad client: window, input devices, drawing
-#   (server   the relay, arrives in M2 step 2)
+#   server    the relay: rooms by code, forwards bytes, knows no game rules
 #
 # Why they are separate crates: none of sim/protocol/host depends on macroquad,
 # so anything that can run Rust can run them: the player's browser today, a
 # dedicated server tomorrow. That keeps the door open to a central server
 # without a rewrite.
 [workspace]
-members = ["game", "sim", "protocol", "host"]
+members = ["game", "sim", "protocol", "host", "server"]
 resolver = "2"
 
 [profile.release]

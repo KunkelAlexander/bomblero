@@ -37,6 +37,8 @@ impl Replica {
             // A second Welcome means the host restarted the match.
             HostMsg::Welcome(w) => *self = Replica::new(w),
             HostMsg::Snapshot(s) => self.apply_snapshot(s),
+            // About the connection, not the match: the session reads it.
+            HostMsg::Pong { .. } => {}
         }
     }
 

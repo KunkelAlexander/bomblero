@@ -89,6 +89,9 @@ impl Host {
                     *latest = input;
                 }
             }
+            // A ping tests the connection, not the game, so whoever owns the
+            // connection answers it (the host session), not this struct.
+            ClientMsg::Ping { .. } => {}
         }
     }
 

@@ -77,11 +77,12 @@ Top-down, real-time arena shooter ("Bomberman meets Liero") in a neon style. Rus
 - **Central-server-ready (owner requirement).** "Host" is a role, not a place: whoever calls `World::step` is the authority. Today that will be a player's browser; it must stay possible to move that role into a dedicated server binary that links `sim`, with clients unchanged. So: the host logic (collect inputs by player id, step, build snapshots) is the `Host` struct in the `host` crate: it takes and returns already-decoded messages and never touches rendering or the transport. Message types and the client's `Replica` live in the shared `protocol` crate. Clients never call `World::step`; they draw a `Replica` built from snapshots, even in offline play (the game runs host and client over an in-memory loopback).
 - The sim runs at a fixed 60 Hz. Rendering runs at the display rate.
 - Weapons are data rows (`WeaponDef`), not types.
-- Online is host-authoritative: one player's browser runs the sim, a small relay server only creates rooms by code and forwards messages. No client-side prediction in v1.
+- Online is host-authoritative: one player's browser runs the sim, a small relay server (`server` crate, rooms by code, forwards opaque bytes, never decodes game messages) only creates rooms and forwards messages. The game's own WebSocket wrapper is `game/src/socket.rs` + `web/net.js` (quad-net was rejected: it panics on connect failure and cannot report a closed socket). No client-side prediction in v1.
 
 ## Commands
 - Native: `cargo run -p game --release`
 - Web build: `cargo build -p game --release --target wasm32-unknown-unknown`, then serve `web/` (see `web/README` once it exists, or `python -m http.server` in `web/`).
+- Relay server: `cargo run -p server --release` (port 9001, or $PORT). The game connects to `ws://127.0.0.1:9001/ws` unless built with `RELAY_URL=wss://...`.
 - Tests: `cargo test` (sim, protocol and host tests are headless: no window or GPU needed)
 
 ## Plan

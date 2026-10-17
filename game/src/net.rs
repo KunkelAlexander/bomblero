@@ -10,13 +10,24 @@
 //   client_send ─ up ──> host_recv
 //   client_recv <─ down ─ host_send
 //
-// Step 2 adds a second kind of wire (a real WebSocket through the relay) with
-// the same four operations, so the code on either side will not care which one
-// it is talking over.
+// `RelayLink` (further down) is the second kind of wire: a real WebSocket to
+// the relay server, which passes our bytes on to the other players.
 
 use std::collections::VecDeque;
 
-use protocol::{decode_client, decode_host, encode_client, encode_host, ClientMsg, HostMsg};
+use protocol::{
+    decode_client, decode_from_relay, decode_host, encode_client, encode_host, encode_to_relay, ClientMsg, FromRelay,
+    HostMsg, ToRelay,
+};
+
+use crate::socket::{Socket, SocketState};
+
+/// Where the relay lives. Local by default; a release build for the web
+/// overrides it with `RELAY_URL=wss://... cargo build ...`.
+pub const RELAY_URL: &str = match option_env!("RELAY_URL") {
+    Some(url) => url,
+    None => "ws://127.0.0.1:9001/ws",
+};
 
 #[derive(Default)]
 pub struct Loopback {
@@ -77,5 +88,34 @@ impl RateMeter {
             self.last_time = now;
             self.last_total = total;
         }
+    }
+}
+
+/// Our connection to the relay server (`protocol::relay` explains what the
+/// relay does). Same idea as `Loopback`, but the bytes really travel.
+pub struct RelayLink {
+    socket: Socket,
+}
+
+impl RelayLink {
+    pub fn connect(url: &str) -> RelayLink {
+        RelayLink { socket: Socket::connect(url) }
+    }
+
+    pub fn state(&self) -> SocketState {
+        self.socket.state()
+    }
+
+    pub fn send(&mut self, msg: &ToRelay) {
+        self.socket.send(&encode_to_relay(msg));
+    }
+
+    pub fn recv(&mut self) -> Option<FromRelay> {
+        while let Some(bytes) = self.socket.recv() {
+            if let Some(msg) = decode_from_relay(&bytes) {
+                return Some(msg);
+            }
+        }
+        None
     }
 }

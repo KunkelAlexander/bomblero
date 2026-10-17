@@ -130,3 +130,9 @@ server/Dockerfile, render.yaml, fly.toml
 - Two more crates besides `sim`: `protocol` (messages, byte encoding, client `Replica`) and `host` (the authority as a message-in/message-out struct). The relay `server` crate comes in step 2 and does not link `host`.
 - Offline play now runs the whole online pipeline over an in-memory `Loopback` (Input -> Host -> Snapshot -> Replica -> draw), so going online only swaps the wire.
 - Steps re-sliced: step 1 already carries inputs and snapshots (original steps 3 and 4) over loopback. Remaining: 2 relay with rooms, 3 host/join over the relay (play with a friend), 4 snapshot rate and bandwidth, 5 client interpolation, then `docs/NETWORKING.md` and deploy.
+
+## Addendum (M2 step 2)
+- `server` crate = relay: rooms by 4-letter code, peer ids stamped by the relay, host leaving closes the room, joiners can only talk to the host. Room logic (`rooms.rs`) is plain synchronous code with unit tests; `lib.rs` is the thin axum WebSocket shell; `tests/e2e.rs` uses real sockets.
+- quad-net rejected (panics on failed connect, no close detection). Own wrapper: `game/src/socket.rs` (tungstenite thread natively, browser WebSocket via `web/net.js`).
+- Game now has a menu (P offline, H host, J join by code) and a lobby screen that shows the room code, friends count and joiner->relay->host->relay->joiner round-trip time. Relay URL: `RELAY_URL` env at build time, default `ws://127.0.0.1:9001/ws`.
+- Native client has no TLS (browsers handle wss themselves); a native build can only talk to a `ws://` relay.

@@ -20,9 +20,12 @@
 //   * Tick: the sim's step counter. It labels snapshots so a client knows which
 //     moment of the match it is looking at.
 
+pub mod relay;
 pub mod replica;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+pub use relay::{FromRelay, Reject, ToRelay};
 use sim::{Event, Input, Player, Projectile, Tile};
 
 /// Which player slot a connection controls. The host decides it, never the
@@ -35,6 +38,9 @@ pub enum ClientMsg {
     /// The player's wishes for now. Sent once per rendered frame; the host
     /// keeps only the newest one per player.
     Input(Input),
+    /// "Are you there? How long does a round trip take?" The token is echoed
+    /// back unchanged in `HostMsg::Pong`.
+    Ping { token: u32 },
 }
 
 /// Host -> client.
@@ -42,6 +48,7 @@ pub enum ClientMsg {
 pub enum HostMsg {
     Welcome(Welcome),
     Snapshot(Snapshot),
+    Pong { token: u32 },
 }
 
 /// Sent once to a new arrival: everything needed to start from scratch.
@@ -83,26 +90,47 @@ pub struct Snapshot {
 /// the outside world, so we never trust their size.
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
-pub fn encode_client(msg: &ClientMsg) -> Vec<u8> {
-    bincode::serialize(msg).expect("encoding a message cannot fail")
-}
-
-pub fn encode_host(msg: &HostMsg) -> Vec<u8> {
+fn encode<T: Serialize>(msg: &T) -> Vec<u8> {
     bincode::serialize(msg).expect("encoding a message cannot fail")
 }
 
 /// `None` means the bytes were garbage. Callers drop such messages: a peer
 /// sending nonsense must never be able to crash us.
-pub fn decode_client(bytes: &[u8]) -> Option<ClientMsg> {
+fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
     if bytes.len() > MAX_MESSAGE_BYTES {
         return None;
     }
     bincode::deserialize(bytes).ok()
 }
 
+pub fn encode_client(msg: &ClientMsg) -> Vec<u8> {
+    encode(msg)
+}
+
+pub fn encode_host(msg: &HostMsg) -> Vec<u8> {
+    encode(msg)
+}
+
+pub fn decode_client(bytes: &[u8]) -> Option<ClientMsg> {
+    decode(bytes)
+}
+
 pub fn decode_host(bytes: &[u8]) -> Option<HostMsg> {
-    if bytes.len() > MAX_MESSAGE_BYTES {
-        return None;
-    }
-    bincode::deserialize(bytes).ok()
+    decode(bytes)
+}
+
+pub fn encode_to_relay(msg: &ToRelay) -> Vec<u8> {
+    encode(msg)
+}
+
+pub fn encode_from_relay(msg: &FromRelay) -> Vec<u8> {
+    encode(msg)
+}
+
+pub fn decode_to_relay(bytes: &[u8]) -> Option<ToRelay> {
+    decode(bytes)
+}
+
+pub fn decode_from_relay(bytes: &[u8]) -> Option<FromRelay> {
+    decode(bytes)
 }
