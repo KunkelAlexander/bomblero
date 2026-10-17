@@ -33,11 +33,11 @@ use local::LocalGame;
 use macroquad::prelude::*;
 use menu::{Choice, Menu};
 use present::Presenter;
-use sim::DT;
+use sim::{Input, DT};
 
 fn window_conf() -> Conf {
     Conf {
-        window_title: "Neon Bomber".to_owned(),
+        window_title: "Bomblero".to_owned(),
         window_width: view::WIDTH as i32,
         window_height: view::HEIGHT as i32,
         window_resizable: false,
@@ -74,11 +74,14 @@ impl HostGame {
         HostGame { game, presenter: Presenter::default(), bucket: 0.0 }
     }
 
-    fn frame(&mut self, controls: &mut Controls, glow: &view::Glow) {
-        if is_key_pressed(KeyCode::R) {
-            self.game.restart(new_seed());
-        }
+    /// The menu's hub: a tiny match with one player and no bots (see `menu.rs`).
+    fn menu() -> HostGame {
+        HostGame { game: LocalGame::menu(new_seed()), presenter: Presenter::default(), bucket: 0.0 }
+    }
 
+    /// Everything except drawing: send the player's wishes to the host, let the
+    /// host tick for as much real time as has passed, take in its answer.
+    fn advance(&mut self, input: Input) {
         // Pattern: Game Loop. macroquad owns the outer loop (`next_frame().await`).
         // Inside it we run the sim on a fixed 1/60 s step using an accumulator:
         // real elapsed time is added to a bucket, and every time the bucket
@@ -93,9 +96,8 @@ impl HostGame {
         // is the match's clock.
         self.bucket += get_frame_time().min(0.1);
 
-        // Client side: read the devices and send the wishes to the host.
-        let me = self.game.replica.me as usize;
-        self.game.send_input(controls.read(&self.game.replica.world, me));
+        // Client side: send the wishes to the host.
+        self.game.send_input(input);
 
         // Host side: tick as many times as real time demands.
         while self.bucket >= DT {
@@ -103,8 +105,19 @@ impl HostGame {
             self.bucket -= DT;
         }
 
-        // Client side again: take in what the host said, then show it.
+        // Client side again: take in what the host said.
         self.game.receive();
+    }
+
+    fn frame(&mut self, controls: &mut Controls, glow: &view::Glow) {
+        if is_key_pressed(KeyCode::R) {
+            self.game.restart(new_seed());
+        }
+
+        // Read the devices, run the match, then show it.
+        let me = self.game.replica.me as usize;
+        let input = controls.read(&self.game.replica.world, me);
+        self.advance(input);
         let banner = self.game.room_status().unwrap_or_default();
         let (up, down) = (self.game.bytes_up(), self.game.bytes_down());
         self.presenter.show(&mut self.game.replica, up, down, &banner, true, glow);
@@ -133,14 +146,11 @@ async fn main() {
         let mut next = None;
         match &mut screen {
             Screen::Menu(menu) => {
-                next = menu.update().map(|choice| match choice {
+                next = menu.frame(&mut controls, &glow).map(|choice| match choice {
                     Choice::Offline => Screen::Hosting(HostGame::new(false)),
                     Choice::Host => Screen::Hosting(HostGame::new(true)),
                     Choice::Join(code) => Screen::Joined(JoinGame::new(code)),
                 });
-                glow.begin();
-                menu.draw();
-                glow.present();
             }
             Screen::Hosting(host_game) => host_game.frame(&mut controls, &glow),
             Screen::Joined(join_game) => join_game.frame(&mut controls, &glow),

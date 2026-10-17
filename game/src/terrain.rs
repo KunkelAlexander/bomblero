@@ -1,20 +1,25 @@
-// How the arena looks: a greyscale world where shape, not colour, tells you what
-// a rocket will do.
+// How the arena looks: a dark cave. Shape, not colour, tells you what a rocket
+// will do.
 //
-//   * Walls (indestructible) are dark, soft, *fused* masses: neighbouring wall
-//     tiles melt into one continuous shape with rounded corners.
+//   * Walls (indestructible) are polished black stone: fused masses with soft,
+//     slightly irregular outlines, like water-worn rock. They are nearly black
+//     on their own; what you see of them is the *reflections* of lights moving
+//     past (see `lights.rs`, which uses the `shine` texture baked here).
+//   * The floor is mottled stone, darker where it meets a wall (a contact
+//     shadow), so the walls look like they stand on it.
 //   * Bricks (destructible) are lighter, loose pebbles, one per tile, cut into
 //     three facets. The facets are the break lines: each hit knocks one off.
 //
 // Colour is saved for players and weapons, so they stand out against grey.
 //
-// Pattern: Dirty Flag. Walls never change during a match, so the fused look is
-// baked once into a texture and redrawn only if the wall layout differs from
+// Pattern: Dirty Flag. Walls never change during a match, so the whole ground
+// is baked once into textures and redrawn only if the wall layout differs from
 // the one we baked. Bricks change all the time, but each is a few triangles.
 //
 // Like everything in the client this only *reads* the map. The sim still
-// collides against the square tile grid; the rounded look is cosmetic, which is
-// why the rounding is kept small (a bolt should never hit "empty" air by much).
+// collides against the square tile grid; the rounded, wobbly look is cosmetic,
+// which is why the wobble is kept to a few pixels (a bolt should never hit
+// "empty" air by much).
 
 use macroquad::prelude::*;
 use sim::tilemap::Tilemap;
@@ -32,28 +37,40 @@ const FLOOR: Color = Color::new(0.14, 0.14, 0.16, 1.0);
 /// Blur radius in pixels for the fused walls. This is also the corner rounding.
 const BLUR: usize = 5;
 
+/// How far the wall outline may wander, as a fraction of the blurred edge. The
+/// edge ramps over ~22 px, so 0.5 here moves the outline by about +-3 px.
+const WOBBLE: f32 = 0.55;
+
 #[derive(Default)]
 pub struct Terrain {
-    /// The wall layout the texture was baked from (the Dirty Flag's "last seen").
+    /// The wall layout the textures were baked from (the Dirty Flag's "last seen").
     solid: Vec<bool>,
-    walls: Option<Texture2D>,
+    /// Floor and walls, opaque.
+    ground: Option<Texture2D>,
+    /// Which way each wall pixel faces (see `bake`), for the gloss pass.
+    shine: Option<Texture2D>,
 }
 
 impl Terrain {
     pub fn update(&mut self, map: &Tilemap) {
         let solid: Vec<bool> = map.tiles().iter().map(|t| *t == Tile::Solid).collect();
-        if self.walls.is_none() || solid != self.solid {
-            self.walls = Some(bake_walls(&solid));
+        if self.ground.is_none() || solid != self.solid {
+            let (ground, shine) = bake(&solid);
+            self.ground = Some(ground);
+            self.shine = Some(shine);
             self.solid = solid;
         }
     }
 
+    pub fn shine(&self) -> Option<&Texture2D> {
+        self.shine.as_ref()
+    }
+
     pub fn draw(&self, map: &Tilemap) {
-        // The floor is painted a lit grey and the lightmap darkens it (lights.rs):
+        // The ground is painted a lit grey and the lightmap darkens it (lights.rs):
         // a black floor would stay black under any light.
-        draw_rectangle(0.0, 0.0, W as f32, H as f32, FLOOR);
-        if let Some(walls) = &self.walls {
-            draw_texture(walls, 0.0, 0.0, WHITE);
+        if let Some(ground) = &self.ground {
+            draw_texture(ground, 0.0, 0.0, WHITE);
         }
         for ty in 0..MAP_H as i32 {
             for tx in 0..MAP_W as i32 {
@@ -65,9 +82,28 @@ impl Terrain {
     }
 }
 
-// ---- walls: blur the wall mask, then cut and light it -----------------------
+// ---- ground: blur the wall mask, wobble it, then paint floor and walls ------
 
-fn bake_walls(solid: &[bool]) -> Texture2D {
+/// Smooth random values: random numbers on a grid of `1` unit, blended between
+/// grid points. Scale the coordinates down for big soft patches, up for fine
+/// detail. (Value noise: no library needed.)
+fn smooth_noise(x: f32, y: f32, salt: i32) -> f32 {
+    let (ix, iy) = (x.floor(), y.floor());
+    let (fx, fy) = (x - ix, y - iy);
+    let (u, v) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+    let at = |dx: i32, dy: i32| hash(ix as i32 + dx, iy as i32 + dy, salt);
+    let top = at(0, 0) + (at(1, 0) - at(0, 0)) * u;
+    let bottom = at(0, 1) + (at(1, 1) - at(0, 1)) * u;
+    top + (bottom - top) * v
+}
+
+/// Returns (ground, shine).
+///   * ground: the painted floor and walls.
+///   * shine: for each wall pixel, which way its surface leans (red/green, 0.5 =
+///     flat) and how much of the pixel is wall (alpha). The gloss pass turns that
+///     into highlights: it is a "normal map", the usual trick for making a flat
+///     picture react to light.
+fn bake(solid: &[bool]) -> (Texture2D, Texture2D) {
     // 1. A mask the size of the screen: 1.0 inside a wall tile, 0.0 elsewhere.
     let mut height = vec![0.0f32; W * H];
     for y in 0..H {
@@ -80,13 +116,27 @@ fn bake_walls(solid: &[bool]) -> Texture2D {
     // 2. Blur it twice. A straight edge stays exactly where it was (the blur
     //    is 0.5 right on it), but a convex corner loses a little and a concave
     //    one gains a little: that is what rounds and fuses the shapes.
-    box_blur(&mut height);
-    box_blur(&mut height);
+    box_blur(&mut height, BLUR);
+    box_blur(&mut height, BLUR);
 
-    // 3. Read the blurred mask two ways: "is this pixel in the wall?" (above
-    //    one half) and "which way does the surface slope?" (its gradient), which
-    //    gives a soft bevel lit from the top left.
-    let mut bytes = vec![0u8; W * H * 4];
+    // 3. Blur it further, into a wide soft shadow for the floor to darken by.
+    let mut shadow = height.clone();
+    box_blur(&mut shadow, 7);
+    box_blur(&mut shadow, 7);
+
+    // 4. Wobble the outline with noise, so the walls are not ruler-straight.
+    //    Only pixels near an edge can cross the one-half line, so the interior
+    //    of a wall and open floor are not affected.
+    for y in 0..H {
+        for x in 0..W {
+            let (fx, fy) = (x as f32, y as f32);
+            let n = smooth_noise(fx / 26.0, fy / 26.0, 3) * 0.7 + smooth_noise(fx / 12.0, fy / 12.0, 4) * 0.3;
+            height[y * W + x] += (n - 0.5) * WOBBLE;
+        }
+    }
+
+    let mut ground = vec![0u8; W * H * 4];
+    let mut shine = vec![0u8; W * H * 4];
     for y in 0..H {
         for x in 0..W {
             let at = |dx: i32, dy: i32| {
@@ -94,49 +144,99 @@ fn bake_walls(solid: &[bool]) -> Texture2D {
                 height[py as usize * W + px as usize]
             };
             let h = at(0, 0);
-            let slope = (at(1, 0) - at(-1, 0)) + (at(0, 1) - at(0, -1));
+            let (gx, gy) = (at(1, 0) - at(-1, 0), at(0, 1) - at(0, -1));
+            let slope = gx + gy; // > 0: the surface faces up and to the left
             let inside = ((h - 0.5) * 7.0 + 0.5).clamp(0.0, 1.0); // ~1 px soft edge
-            let rim = if h > 0.5 && h < 0.62 { 0.04 } else { 0.0 }; // thin lit edge
-            let grey = ((0.07 + slope * 0.9 + rim) * LIFT).clamp(0.03, 0.5);
 
             let i = (y * W + x) * 4;
-            if inside > 0.0 {
-                let v = (grey * 255.0) as u8;
-                bytes[i..i + 4].copy_from_slice(&[v, v, (v as f32 * 1.06) as u8, (inside * 255.0) as u8]);
-            } else if x % TILE as usize == 16 && y % TILE as usize == 16 {
-                // A faint dot at the centre of each floor tile, so you can still
-                // count tiles for Bomberman-style trapping without a noisy grid.
-                bytes[i..i + 4].copy_from_slice(&[80, 80, 90, 150]);
+            let (fx, fy) = (x as f32, y as f32);
+
+            // The floor: big soft patches, finer grain, a slow drift between
+            // cool and warm, a slight green where the patches are strongest, a
+            // dark corner vignette, and the contact shadow next to walls.
+            let patch = smooth_noise(fx / 90.0, fy / 90.0, 11) * 0.6 + smooth_noise(fx / 30.0, fy / 30.0, 12) * 0.4;
+            let grain = hash(x as i32, y as i32, 13) - 0.5;
+            let warm = smooth_noise(fx / 140.0, fy / 140.0, 14);
+            let moss = (patch - 0.6).max(0.0) * 0.5;
+            let edge = ((fx / W as f32 - 0.5).abs().max((fy / H as f32 - 0.5).abs()) * 2.0).powi(3);
+            let contact = (shadow[y * W + x] * 1.6).clamp(0.0, 1.0);
+            let shade = (0.45 + 1.1 * patch) * (1.0 + grain * 0.14) * (1.0 - 0.4 * edge) * (1.0 - 0.7 * contact);
+            let floor = [
+                FLOOR.r * shade * (0.9 + 0.2 * warm),
+                (FLOOR.g + moss * 0.1) * shade,
+                FLOOR.b * shade * (1.1 - 0.2 * warm) * (1.0 - moss),
+            ];
+
+            // The wall: nearly black, with a faint cold bevel facing the
+            // top-left, so it still has a shape before any light reaches it.
+            let rim = if h > 0.5 && h < 0.62 { 0.03 } else { 0.0 };
+            let wall_grey = ((0.012 + slope.max(0.0) * 0.4 + rim) * LIFT).clamp(0.008, 0.3);
+            let wall = [wall_grey, wall_grey * 1.05, wall_grey * 1.25];
+
+            // A faint dot at the centre of each floor tile, so you can still
+            // count tiles for Bomberman-style trapping without a noisy grid.
+            let dot = if inside == 0.0 && x % TILE as usize == 16 && y % TILE as usize == 16 { 0.35 } else { 0.0 };
+            for c in 0..3 {
+                let floor_c = floor[c] + (0.3 - floor[c]) * dot;
+                let v = floor_c + (wall[c] - floor_c) * inside;
+                ground[i + c] = (v.clamp(0.0, 1.0) * 255.0) as u8;
             }
+            ground[i + 3] = 255;
+
+            // Surface direction: it points away from the wall, i.e. against the
+            // way the height grows. Scaled so the usual range fits one byte.
+            shine[i] = ((0.5 - gx * 2.5).clamp(0.0, 1.0) * 255.0) as u8;
+            shine[i + 1] = ((0.5 - gy * 2.5).clamp(0.0, 1.0) * 255.0) as u8;
+            shine[i + 2] = 128;
+            shine[i + 3] = (inside * 255.0) as u8;
         }
     }
-    let texture = Texture2D::from_image(&Image { width: W as u16, height: H as u16, bytes });
-    texture.set_filter(FilterMode::Linear);
-    texture
+    let upload = |bytes| {
+        let texture = Texture2D::from_image(&Image { width: W as u16, height: H as u16, bytes });
+        texture.set_filter(FilterMode::Linear);
+        texture
+    };
+    (upload(ground), upload(shine))
 }
 
-/// Average each pixel with its neighbours within `BLUR` pixels: first along
+/// Average each pixel with its neighbours within `radius` pixels: first along
 /// rows, then along columns (two cheap passes instead of one big square).
 /// Pixels past the edge repeat the edge pixel, so the border wall stays solid.
-fn box_blur(v: &mut [f32]) {
-    let n = (2 * BLUR + 1) as f32;
+///
+/// A running sum: moving one pixel along adds the pixel that enters the window
+/// and subtracts the one that leaves, so the cost per pixel does not grow with
+/// the radius. (The baking runs once per map, but in the browser the naive
+/// version froze the game for about half a second.)
+fn box_blur(v: &mut [f32], radius: usize) {
+    let n = (2 * radius + 1) as f32;
+    let r = radius as i32;
     let mut tmp = vec![0.0f32; v.len()];
     for y in 0..H {
-        for x in 0..W {
-            let mut sum = 0.0;
-            for d in -(BLUR as i32)..=BLUR as i32 {
-                sum += v[y * W + (x as i32 + d).clamp(0, W as i32 - 1) as usize];
-            }
-            tmp[y * W + x] = sum / n;
+        let row = &v[y * W..(y + 1) * W];
+        let at = |x: i32| row[x.clamp(0, W as i32 - 1) as usize];
+        let mut sum: f32 = (-r..=r).map(at).sum();
+        for x in 0..W as i32 {
+            tmp[y * W + x as usize] = sum / n;
+            sum += at(x + r + 1) - at(x - r);
         }
     }
-    for y in 0..H {
+    // Down the columns, one whole row at a time (friendlier to the cache than
+    // walking a column): `sums[x]` is the running sum of column x.
+    let row_at = |y: i32| y.clamp(0, H as i32 - 1) as usize * W;
+    let mut sums = vec![0.0f32; W];
+    for d in -r..=r {
+        let from = row_at(d);
         for x in 0..W {
-            let mut sum = 0.0;
-            for d in -(BLUR as i32)..=BLUR as i32 {
-                sum += tmp[(y as i32 + d).clamp(0, H as i32 - 1) as usize * W + x];
-            }
-            v[y * W + x] = sum / n;
+            sums[x] += tmp[from + x];
+        }
+    }
+    for y in 0..H as i32 {
+        for x in 0..W {
+            v[y as usize * W + x] = sums[x] / n;
+        }
+        let (enter, leave) = (row_at(y + r + 1), row_at(y - r));
+        for x in 0..W {
+            sums[x] += tmp[enter + x] - tmp[leave + x];
         }
     }
 }

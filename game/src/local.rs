@@ -16,6 +16,7 @@
 use host::Host;
 use protocol::replica::Replica;
 use protocol::{ClientMsg, HostMsg, PlayerId};
+use sim::tilemap::MAP_HUB;
 use sim::Input;
 
 use crate::net::Loopback;
@@ -37,7 +38,15 @@ pub struct LocalGame {
 
 impl LocalGame {
     pub fn new(seed: u32) -> LocalGame {
-        let mut host = Host::new(PLAYER_COUNT, seed);
+        LocalGame::with_host(Host::new(PLAYER_COUNT, seed))
+    }
+
+    /// The menu hub: one player alone on a small map (see `MAP_HUB`).
+    pub fn menu(seed: u32) -> LocalGame {
+        LocalGame::with_host(Host::on_map(MAP_HUB, 1, seed))
+    }
+
+    fn with_host(mut host: Host) -> LocalGame {
         let mut link = Loopback::default();
 
         // The handshake, exactly as it will happen online: the newcomer

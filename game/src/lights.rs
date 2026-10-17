@@ -4,7 +4,8 @@
 //   1. clear a small texture to the AMBIENT level (the unlit arena);
 //   2. add every light to it: a smooth coloured gradient that stops at walls;
 //   3. multiply the lightmap over the scene (stone only: actors are drawn after
-//      this, so they stay bright, like things that make their own light).
+//      this, so they stay bright, like things that make their own light);
+//   4. add the glints the lights make on the polished black walls.
 //
 // Why a lightmap and not drawing glows on the stone: light *adds up* (two
 // bolts crossing make a brighter spot), it can brighten the stone and not just
@@ -39,6 +40,7 @@ pub const AMBIENT: f32 = 0.14;
 const MAP_PX: Vec2 = vec2(MAP_W as f32 * TILE, MAP_H as f32 * TILE);
 const DOWNSCALE: f32 = 4.0;
 
+#[derive(Clone, Copy)]
 pub struct Light {
     pub pos: Vec2,
     pub radius: f32,
@@ -72,6 +74,8 @@ pub struct Lights {
     /// What `mask` currently holds (Pattern: Dirty Flag, upload only on change).
     mask_bytes: Vec<u8>,
     light: Material,
+    /// The highlights on the black walls (see `GLOSS_FRAGMENT`).
+    gloss: Material,
     multiply: Material,
 }
 
@@ -102,6 +106,24 @@ impl Lights {
         light.set_uniform("map_px", MAP_PX);
         light.set_texture("Mask", mask.clone());
 
+        // The gloss pass adds like the lights do, but at full resolution.
+        let gloss = load_material(
+            ShaderSource::Glsl { vertex: shaders::LIGHT_VERTEX, fragment: shaders::GLOSS_FRAGMENT },
+            MaterialParams {
+                pipeline_params: PipelineParams { color_blend: Some(add), ..Default::default() },
+                uniforms: vec![
+                    UniformDesc::new("light", UniformType::Float2),
+                    UniformDesc::new("radius", UniformType::Float1),
+                    UniformDesc::new("tint", UniformType::Float3),
+                    UniformDesc::new("map_px", UniformType::Float2),
+                ],
+                textures: vec!["Mask".to_string(), "Normals".to_string()],
+            },
+        )
+        .expect("gloss shader failed to compile");
+        gloss.set_uniform("map_px", MAP_PX);
+        gloss.set_texture("Mask", mask.clone());
+
         // Scene * lightmap + lightmap * scene = 2 * scene * lightmap. That is
         // the "2x multiply": a lightmap of 0.5 leaves the scene as it is, more
         // than that brightens it, less darkens it.
@@ -116,7 +138,7 @@ impl Lights {
         )
         .expect("lightmap shader failed to compile");
 
-        Lights { map, mask, mask_bytes: Vec::new(), light, multiply }
+        Lights { map, mask, mask_bytes: Vec::new(), light, gloss, multiply }
     }
 
     fn update_mask(&mut self, tilemap: &Tilemap) {
@@ -134,7 +156,7 @@ impl Lights {
     }
 
     /// Light the stone drawn so far. Call after the terrain, before the actors.
-    pub fn apply(&mut self, glow: &Glow, tilemap: &Tilemap, lights: &[Light]) {
+    pub fn apply(&mut self, glow: &Glow, tilemap: &Tilemap, lights: &[Light], shine: Option<&Texture2D>) {
         self.update_mask(tilemap);
 
         // Step 1 and 2: the lightmap, in world coordinates like everything else.
@@ -166,6 +188,18 @@ impl Lights {
                 ..Default::default()
             },
         );
+
+        // Step 4: the glints on the walls, light by light.
+        if let Some(shine) = shine {
+            gl_use_material(&self.gloss);
+            self.gloss.set_texture("Normals", shine.clone());
+            for l in lights {
+                self.gloss.set_uniform("light", l.pos);
+                self.gloss.set_uniform("radius", l.radius);
+                self.gloss.set_uniform("tint", vec3(l.color.r, l.color.g, l.color.b) * l.strength);
+                draw_rectangle(l.pos.x - l.radius, l.pos.y - l.radius, l.radius * 2.0, l.radius * 2.0, WHITE);
+            }
+        }
         gl_use_default_material();
     }
 }

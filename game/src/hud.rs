@@ -13,7 +13,7 @@
 // Read-only like all drawing: it takes `&World` and never changes it.
 
 use macroquad::prelude::*;
-use sim::world::{RESPAWN_TIME, SCORE_LIMIT};
+use sim::world::{MAX_HP, RESPAWN_TIME, SCORE_LIMIT};
 use sim::{World, WEAPONS};
 
 use crate::draw::{center_text, player_color};
@@ -24,15 +24,14 @@ const CARD_BG: Color = Color::new(0.075, 0.08, 0.095, 1.0);
 const CARD_BG_SELECTED: Color = Color::new(0.12, 0.13, 0.155, 1.0);
 const TEXT: Color = Color::new(0.92, 0.93, 0.96, 1.0);
 const TEXT_DIM: Color = Color::new(0.45, 0.47, 0.52, 1.0);
-const BAR_Y: f32 = HUD_TOP + 4.0;
+const BAR_Y: f32 = HUD_TOP + 8.0;
 const BAR_H: f32 = 44.0;
 
 /// `down`/`up` are bytes per second on the wire; `banner` is a line of status
 /// (room code, ping) from whoever is playing; `frame_ms` the time per frame.
 pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32, up: f32, frame_ms: f32) {
     draw_rectangle(0.0, HUD_TOP, 1280.0, 768.0 - HUD_TOP, BAR_BG);
-    draw_line(0.0, HUD_TOP, 1280.0, HUD_TOP, 1.0, Color::new(0.16, 0.17, 0.2, 1.0));
-
+    draw_health(world, me);
     draw_weapons(world, me);
     draw_scores(world, me);
 
@@ -41,6 +40,20 @@ pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32
     right_text(&format!("in {:.1} KB/s   out {:.1} KB/s   {:.1} ms", down / 1024.0, up / 1024.0, frame_ms), 1264.0, BAR_Y + 38.0, 14.0, TEXT_DIM);
 
     draw_messages(world, me, can_restart);
+}
+
+/// Your health is the top edge of the strip: a line in your colour that shrinks
+/// from the right. It sits right under the arena, where the eye already goes,
+/// and needs no room of its own. Below a third it pulses.
+fn draw_health(world: &World, me: usize) {
+    let player = &world.players[me];
+    let c = player_color(me);
+    draw_rectangle(0.0, HUD_TOP, 1280.0, 4.0, Color::new(0.11, 0.12, 0.15, 1.0));
+    if player.alive {
+        let frac = (player.hp / MAX_HP).clamp(0.0, 1.0);
+        let pulse = if frac < 0.34 { 0.65 + 0.35 * (get_time() as f32 * 9.0).sin() } else { 1.0 };
+        draw_rectangle(0.0, HUD_TOP, 1280.0 * frac, 4.0, Color::new(c.r, c.g, c.b, pulse));
+    }
 }
 
 fn draw_weapons(world: &World, me: usize) {
@@ -63,14 +76,32 @@ fn draw_weapons(world: &World, me: usize) {
         draw_text(&format!("{}", slot + 1), x + 6.0, y + 15.0, 14.0, TEXT_DIM);
         draw_text(def.name, x + 19.0, y + 15.0, 14.0, name_color);
 
-        // Ammo bar: the magazine; while reloading it refills as progress.
+        // Ammo. A small magazine is drawn as one segment per round (a Railgun is
+        // one fat block, a Bomb two), so you can count what is left at a glance;
+        // a big one is a plain bar plus the number. While reloading, either
+        // becomes a progress bar.
         let reloading = weapon.reload > 0.0;
-        let fill = if reloading { 1.0 - weapon.reload / def.reload } else { weapon.ammo as f32 / def.mag as f32 };
-        let (bar_x, bar_w) = (x + 6.0, w - 12.0);
-        draw_rectangle(bar_x, y + 22.0, bar_w, 4.0, Color::new(0.03, 0.03, 0.04, 1.0));
-        draw_rectangle(bar_x, y + 22.0, bar_w * fill, 4.0, if reloading { TEXT_DIM } else { ammo_color });
-        let status = if reloading { "reloading".to_string() } else { format!("{}/{}", weapon.ammo, def.mag) };
-        draw_text(&status, x + 6.0, y + 39.0, 14.0, if reloading { TEXT_DIM } else { name_color });
+        let (bar_x, bar_w, bar_y) = (x + 6.0, w - 12.0, y + 22.0);
+        let dark = Color::new(0.03, 0.03, 0.04, 1.0);
+        if reloading {
+            draw_rectangle(bar_x, bar_y, bar_w, 6.0, dark);
+            draw_rectangle(bar_x, bar_y, bar_w * (1.0 - weapon.reload / def.reload), 6.0, TEXT_DIM);
+        } else if def.mag <= 8 {
+            let gap = 3.0;
+            let seg = (bar_w - gap * (def.mag as f32 - 1.0)) / def.mag as f32;
+            for k in 0..def.mag {
+                let color = if k < weapon.ammo { ammo_color } else { dark };
+                draw_rectangle(bar_x + k as f32 * (seg + gap), bar_y, seg, 6.0, color);
+            }
+        } else {
+            draw_rectangle(bar_x, bar_y, bar_w, 6.0, dark);
+            draw_rectangle(bar_x, bar_y, bar_w * weapon.ammo as f32 / def.mag as f32, 6.0, ammo_color);
+        }
+        if reloading {
+            draw_text("reloading", x + 6.0, y + 40.0, 14.0, TEXT_DIM);
+        } else if def.mag > 8 {
+            draw_text(&format!("{}/{}", weapon.ammo, def.mag), x + 6.0, y + 40.0, 14.0, name_color);
+        }
     }
 }
 
@@ -79,7 +110,9 @@ fn draw_scores(world: &World, me: usize) {
     // A fixed spot (not centred) so it never collides with the weapon cards.
     let mut x = 706.0;
     for (i, p) in world.players.iter().enumerate() {
+        // A dead player's hexagon goes dark until they respawn.
         let c = player_color(i);
+        let c = if p.alive { c } else { Color::new(c.r, c.g, c.b, 0.3) };
         let y = BAR_Y + 5.0;
         if i == me {
             // "This is you": a tinted chip with an outline in your colour.

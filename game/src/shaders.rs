@@ -82,6 +82,63 @@ void main() {
 }
 ";
 
+// The gloss of the black walls: a mirror-like highlight (a "specular" term, the
+// standard shiny-surface formula) from each light, drawn at full resolution on
+// top of the lit scene. A highlight is bright only where the surface leans so
+// that it reflects the light towards the eye, so it shows up as a thin glint
+// along the edge of a wall that faces the light, and it slides along the edge as
+// the light moves. `Normals` is baked in terrain.rs: red/green hold the
+// direction the surface leans (0.5 = flat), alpha says whether there is wall.
+// The pass runs for walls only, so everywhere else it exits on the first line.
+pub const GLOSS_FRAGMENT: &str = "#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec2 world;
+uniform vec2 light;
+uniform float radius;
+uniform vec3 tint;
+uniform vec2 map_px;
+uniform sampler2D Mask;
+uniform sampler2D Normals;
+
+void main() {
+    vec2 uv = world / map_px;
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+        discard;
+    }
+    vec4 surface = texture2D(Normals, uv);
+    if (surface.a < 0.02) {
+        discard;
+    }
+    vec2 to_light = light - world;
+    float d = length(to_light);
+    if (d >= radius) {
+        discard;
+    }
+    // Walls hide the light from each other, exactly as in the lightmap.
+    float in_wall = 0.0;
+    float step_px = d / 16.0;
+    for (int i = 0; i < 16; i++) {
+        vec2 p = world + to_light * (float(i) / 16.0);
+        in_wall += texture2D(Mask, p / map_px).r * step_px;
+    }
+    float lit = 1.0 - clamp(in_wall / 14.0, 0.0, 1.0);
+
+    // The surface direction, tilted more the further it is from flat. The light
+    // hangs 40 px above the floor and the eye looks straight down, so the
+    // highlight is where the surface faces halfway between the two.
+    vec3 n = normalize(vec3((surface.rg - 0.5) * 2.8, 1.0));
+    vec3 l = normalize(vec3(to_light, 40.0));
+    vec3 h = normalize(l + vec3(0.0, 0.0, 1.0));
+    float spec = pow(max(dot(n, h), 0.0), 40.0);
+    float fall = 1.0 - d / radius;
+    gl_FragColor = vec4(tint * (spec * lit * fall * 2.4 * surface.a), 1.0);
+}
+";
+
 // Cheap glow: average a ring of neighbouring pixels (a blur) and add it on top
 // of the sharp image. Bright thin lines bleed light into the dark around them,
 // which is the whole "neon" look. M3 replaces this with a proper two-pass

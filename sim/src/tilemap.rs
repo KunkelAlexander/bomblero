@@ -186,6 +186,34 @@ pub const MAP_GRID: &str = "\
 #S..bb...#b..bb..........bb..b#...bb..S#
 ########################################";
 
+/// The menu's map: a plaza with a shooting range, and three alcoves at the
+/// bottom, one per menu option. The player WALKS to a choice instead of picking
+/// it from a list, so the menu is also the controls tutorial. It is an ordinary
+/// map: the menu runs on the same sim as a match, with one player and no bots.
+pub const MAP_HUB: &str = "\
+########################################
+#......................................#
+#......................................#
+#......................................#
+#......................................#
+#......................................#
+#......................................#
+#.......bbbbbb............bbbbbb.......#
+#.......bbbbbb............bbbbbb.......#
+#..................S...................#
+#......................................#
+#......................................#
+#####.....########....########.....#####
+####.......######......######.......####
+####.......######......######.......####
+####.......######......######.......####
+####.......######......######.......####
+####.......######......######.......####
+####.......######......######.......####
+####.......######......######.......####
+####.......######......######.......####
+########################################";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +226,13 @@ mod tests {
         for s in &map.spawns {
             assert!(!map.circle_hits_wall(*s, 10.0));
         }
+    }
+
+    #[test]
+    fn hub_map_parses_and_its_spawn_is_free() {
+        let map = Tilemap::from_ascii(MAP_HUB);
+        assert_eq!(map.spawns.len(), 1);
+        assert!(!map.circle_hits_wall(map.spawns[0], 10.0));
     }
 
     #[test]

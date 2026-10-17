@@ -1,8 +1,9 @@
-# Neon Bomber-Liero
+# Bomblero
 
-A fast top-down arena shooter ("Bomberman meets Liero") in a neon style, written
-in Rust with [macroquad](https://macroquad.rs). It runs in the browser (WASM)
-and natively, and you can play it online with friends through a room code.
+**Bomblero** is a fast top-down arena shooter in a dark neon cave: blast the
+bricks, dodge the bombs, and be the first to 15 kills. It is written in Rust
+with [macroquad](https://macroquad.rs), runs in the browser (WASM) and
+natively, and you can play it online with friends through a room code.
 
 It uses **no external assets**: graphics are procedural shapes plus a glow
 shader, and sounds will be synthesized in code.
@@ -11,11 +12,34 @@ It is also a learning project. The code is commented to teach how online
 multiplayer works and where patterns from *Game Programming Patterns* fit, so
 reading it should explain how a real-time multiplayer game is put together.
 
-![The menu](docs/img/menu.png)
+![The menu is a small arena: walk onto PLAY, HOST or JOIN.](docs/img/menu.png)
 
-![A match against three bots: light pebbles can be shot away, the dark rounded walls cannot. Colour says who, orange says danger.](docs/img/match.png)
+*The menu is a level. Walk onto a hexagon and stay a moment to choose; the
+shooting range in the middle is for trying the weapons first.*
 
-![Hosting an online game: the room code is shown top left](docs/img/host.png)
+| | |
+|---|---|
+| ![Standing on a pad: the ring closes edge by edge in your colour.](docs/img/pad.png) | ![Joining: type the four-character room code.](docs/img/join.png) |
+| *Standing on a pad: the ring closes edge by edge in your colour.* | *JOIN asks for the room code.* |
+
+![A match against three bots: light pebbles can be shot away, the polished black walls cannot. Colour says who, orange says danger.](docs/img/match.png)
+
+*A match against three bots. The pebbles break (one facet per hit); the black
+walls do not. Colour says who, orange says danger.*
+
+![Hosting an online game: the room code is shown at the right of the strip.](docs/img/host.png)
+
+*Hosting: the room code and the network cost are shown in the strip under the arena.*
+
+![Lights glint along the edges of the black walls that face them.](docs/img/glints.png)
+
+*Every player and shot is a light. It casts shadows behind walls and glints
+along the polished edges that face it, in its own colour.*
+
+![The HUD strip: health line on top, one ammo segment per round, scoreboard.](docs/img/hud.png)
+
+*The HUD is one quiet strip: your health is the line along its top edge, each
+weapon shows one segment per round, and the scoreboard marks you with your colour.*
 
 ## Status
 
@@ -32,11 +56,15 @@ Early but playable. Done so far:
 * Simple bots, 100 HP, respawning, first to 15 kills.
 * Online play with room codes: one player hosts, friends join from their own
   browsers. Joiners see the match smoothed by interpolation, with a ping readout.
-* A look of its own: a soft grey stone world, crisp coloured actors, colour for
-  *who* and orange for *danger*, and real lighting: the arena is dark and every player, shot and
-  explosion lights the stone, with shadows behind walls. Only the brightest
-  things glow. A quiet HUD strip under the map shows your weapons
-  and ammo, the scoreboard (your colour marks you) and the room status.
+* A look of its own: a dark cave of mottled stone with polished black walls,
+  crisp coloured actors, colour for *who* and orange for *danger*, and real
+  lighting: every player, shot and explosion lights the stone, casts shadows
+  behind walls and glints off the walls' edges. Only the brightest things glow.
+  A quiet HUD strip under the map shows your health (the line along its top),
+  your weapons with one segment per round, the scoreboard (your colour marks
+  you) and the room status.
+* A menu you play: the start screen is a small arena. Walk onto a hexagon to
+  play offline, host or join, and try the weapons on the shooting range first.
 
 Planned (see [PLAN.md](PLAN.md)): synthesized sound and more effects, then a
 grapple hook, block building, nine more weapons, a loadout screen, three maps and a
@@ -58,8 +86,8 @@ cargo run -p server --release        # the relay, only for online play (port 900
 cargo test                           # headless tests, no window needed
 ```
 
-Menu: **P** play offline against bots, **H** host an online game, **J** join
-one.
+Menu: walk onto the **PLAY**, **HOST** or **JOIN** hexagon and stay a moment
+(or press **P**, **H**, **J**).
 
 | Key | Action |
 |---|---|

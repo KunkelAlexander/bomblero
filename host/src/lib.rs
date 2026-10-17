@@ -55,7 +55,12 @@ pub struct Host {
 impl Host {
     /// A new match with `slots` players, all bots until humans join.
     pub fn new(slots: usize, seed: u32) -> Host {
-        let world = World::new(Tilemap::from_ascii(MAP_GRID), slots, &LOADOUT, seed);
+        Host::on_map(MAP_GRID, slots, seed)
+    }
+
+    /// The same, on another map (the menu's hub is a map too).
+    pub fn on_map(map: &str, slots: usize, seed: u32) -> Host {
+        let world = World::new(Tilemap::from_ascii(map), slots, &LOADOUT, seed);
         let controllers = (0..slots).map(|i| Controller::Bot(bot_for(seed, i))).collect();
         Host { world, controllers, seed }
     }
