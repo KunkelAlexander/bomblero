@@ -1,0 +1,13 @@
+[package]
+name = "sim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Same version and features macroquad uses, so `sim::Vec2` IS `macroquad::Vec2`.
+# The `serde` feature lets a Vec2 travel over the wire.
+glam = { version = "0.27", features = ["scalar-math", "serde"] }
+# Only the derive macros: they let the sim's data types be turned into bytes by
+# the `protocol` crate. The sim itself never serializes anything and still does
+# no I/O.
+serde = { version = "1", features = ["derive"] }

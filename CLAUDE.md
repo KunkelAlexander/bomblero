@@ -73,7 +73,8 @@ Top-down, real-time arena shooter ("Bomberman meets Liero") in a neon style. Rus
 - **No external assets.** Graphics are procedural shapes plus a glow shader; sounds are synthesized in code. Shaders are GLSL 100 strings in the source so they run on both WebGL and native.
 
 ## Architecture rules
-- All game logic lives in the `sim` module and is driven only by per-player `Input` structs ("inputs in, state out"). Rendering and audio only *read* state and events. This is what makes bots, local play and online play share one code path.
+- All game logic lives in the `sim` **crate** (no macroquad, no I/O, no clock) and is driven only by per-player `Input` structs ("inputs in, state out"). Rendering, audio and networking only *read* state and events; the sim never calls into them. This is what makes bots, local play, online play and unit tests share one code path. If a change would make `sim` depend on the window, GPU, sound or sockets, stop and redesign.
+- **Central-server-ready (owner requirement).** "Host" is a role, not a place: whoever calls `World::step` is the authority. Today that will be a player's browser; it must stay possible to move that role into a dedicated server binary that links `sim`, with clients unchanged. So: keep the host logic (collect inputs by player id, step, build snapshots) in one self-contained struct that does not touch rendering or the transport, and keep message types in the shared `protocol` crate.
 - The sim runs at a fixed 60 Hz. Rendering runs at the display rate.
 - Weapons are data rows (`WeaponDef`), not types.
 - Online is host-authoritative: one player's browser runs the sim, a small relay server only creates rooms by code and forwards messages. No client-side prediction in v1.
@@ -81,7 +82,7 @@ Top-down, real-time arena shooter ("Bomberman meets Liero") in a neon style. Rus
 ## Commands
 - Native: `cargo run -p game --release`
 - Web build: `cargo build -p game --release --target wasm32-unknown-unknown`, then serve `web/` (see `web/README` once it exists, or `python -m http.server` in `web/`).
-- Tests: `cargo test`
+- Tests: `cargo test` (the sim tests are headless: no window or GPU needed)
 
 ## Plan
 The full approved plan (decisions, weapon list, milestones M0–M5) is in `PLAN.md`.

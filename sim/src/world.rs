@@ -1,0 +1,601 @@
+// The whole game state and the one function that advances it.
+//
+// Pattern: Game Loop (fixed timestep). `step` always advances exactly 1/60 s.
+// The caller (the game, a server, a test) decides how often to call it. A
+// fixed step means physics behaves the same on a 30 Hz laptop and a 144 Hz
+// monitor, and that two machines fed the same inputs compute the same result.
+//
+// Pattern: Update Method. Each kind of thing (player, projectile) has a step
+// function that moves it one tick. Plain loops over plain structs, no engine.
+//
+// Pattern: Event Queue. When something noteworthy happens (a shot, an
+// explosion, a death) the sim pushes an `Event`. It never plays a sound or
+// spawns a particle itself. Audio, particles and the network each read the
+// queue and react, and the sim stays ignorant of all of them.
+//
+// Networking note ("authority"): whoever calls `step` is the authority. It is
+// the only place where state is allowed to change. Today that is the local
+// game; in online play it is the host (a player's browser or, later, a
+// dedicated server). Everyone else just receives the result.
+
+use glam::{vec2, Vec2};
+use serde::{Deserialize, Serialize};
+
+use crate::input::Input;
+use crate::rng::Rng;
+use crate::tilemap::{tile_center, tile_coords, Tile, Tilemap, TILE};
+use crate::weapons::{Kind, WeaponDef, WEAPONS};
+
+pub const DT: f32 = 1.0 / 60.0;
+pub const PLAYER_RADIUS: f32 = 10.0;
+const PROJECTILE_RADIUS: f32 = 3.0;
+const MOVE_SPEED: f32 = 220.0;
+/// How quickly velocity chases the wanted velocity. The same rule also bleeds
+/// off knockback, so being blown across the room needs no special code.
+const ACCEL: f32 = 12.0;
+const MAX_SPEED: f32 = 900.0;
+pub const MAX_HP: f32 = 100.0;
+pub const RESPAWN_TIME: f32 = 3.0;
+const SPAWN_INVULN: f32 = 2.0;
+pub const SCORE_LIMIT: i32 = 15;
+/// You hurt yourself half as much as others, but get thrown just as far, so
+/// explosions work as a movement tool without being free.
+const SELF_DAMAGE: f32 = 0.5;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WeaponState {
+    /// Index into `WEAPONS`.
+    pub id: u8,
+    pub ammo: u8,
+    pub cooldown: f32,
+    /// Seconds of reload left; > 0 means "reloading". Each weapon reloads on
+    /// its own timer, so you can switch away and it keeps reloading.
+    pub reload: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Player {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub aim: f32,
+    pub hp: f32,
+    pub alive: bool,
+    pub respawn_timer: f32,
+    /// Seconds of spawn protection left.
+    pub invuln: f32,
+    pub weapons: Vec<WeaponState>,
+    /// Index into `weapons`.
+    pub current: usize,
+    pub kills: i32,
+    pub deaths: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Projectile {
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub weapon: u8,
+    pub owner: u8,
+    /// Seconds left to live.
+    pub life: f32,
+}
+
+/// Things that just happened. Consumers read these; the sim never reads them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Event {
+    Shot { player: u8, weapon: u8, pos: Vec2 },
+    Beam { from: Vec2, to: Vec2 },
+    Explosion { pos: Vec2, radius: f32 },
+    Hit { victim: u8, pos: Vec2, damage: f32 },
+    /// A brick got damaged or destroyed. This doubles as the "dirty flag" of
+    /// the terrain: online, only these changes need to be sent, never the
+    /// whole map.
+    TileChanged { x: i32, y: i32, tile: Tile },
+    Died { victim: u8, killer: u8, pos: Vec2 },
+    Respawned { player: u8 },
+    MatchWon { player: u8 },
+}
+
+pub struct World {
+    pub map: Tilemap,
+    pub players: Vec<Player>,
+    pub projectiles: Vec<Projectile>,
+    /// Ticks simulated so far. Online, this is the shared clock that snapshots
+    /// and inputs are labelled with ("tick 1234").
+    pub tick: u32,
+    pub winner: Option<u8>,
+    events: Vec<Event>,
+    rng: Rng,
+}
+
+impl World {
+    /// `loadout` lists the weapon ids every player carries (a per-player
+    /// loadout comes with the loadout screen in M4).
+    pub fn new(map: Tilemap, player_count: usize, loadout: &[u8], seed: u32) -> World {
+        let players = (0..player_count)
+            .map(|i| Player {
+                pos: map.spawns[i % map.spawns.len()],
+                vel: Vec2::ZERO,
+                aim: 0.0,
+                hp: MAX_HP,
+                alive: true,
+                respawn_timer: 0.0,
+                invuln: 0.0,
+                weapons: loadout.iter().map(|&id| full_weapon(id)).collect(),
+                current: 0,
+                kills: 0,
+                deaths: 0,
+            })
+            .collect();
+        World {
+            map,
+            players,
+            projectiles: Vec::with_capacity(64),
+            tick: 0,
+            winner: None,
+            events: Vec::new(),
+            rng: Rng::new(seed),
+        }
+    }
+
+    /// Take the events produced since the last call.
+    pub fn drain_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Advance the world by one tick. `inputs[i]` belongs to player `i`.
+    /// A missing input (shorter slice) counts as "no buttons pressed", which is
+    /// also exactly what we want for a player whose packet has not arrived.
+    pub fn step(&mut self, inputs: &[Input]) {
+        if self.winner.is_some() {
+            return; // match over: freeze the world
+        }
+        for i in 0..self.players.len() {
+            let input = inputs.get(i).copied().unwrap_or_default();
+            self.step_player(i, &input);
+        }
+        self.step_projectiles();
+        self.tick += 1;
+    }
+
+    // ---------------------------------------------------------------- players
+
+    fn step_player(&mut self, i: usize, input: &Input) {
+        if !self.players[i].alive {
+            self.players[i].respawn_timer -= DT;
+            if self.players[i].respawn_timer <= 0.0 {
+                self.respawn(i);
+            }
+            return;
+        }
+
+        let p = &mut self.players[i];
+        p.invuln = (p.invuln - DT).max(0.0);
+        if input.aim.is_finite() {
+            p.aim = input.aim;
+        }
+
+        for w in &mut p.weapons {
+            w.cooldown = (w.cooldown - DT).max(0.0);
+            if w.reload > 0.0 {
+                w.reload -= DT;
+                if w.reload <= 0.0 {
+                    w.reload = 0.0;
+                    w.ammo = WEAPONS[w.id as usize].mag;
+                }
+            }
+        }
+        if (input.weapon as usize) < p.weapons.len() {
+            p.current = input.weapon as usize;
+        }
+
+        // Movement. Never trust the input: clamp the length so nobody can
+        // send move_dir = (1000, 0) and run 1000x faster.
+        let dir = if input.move_dir.is_finite() { input.move_dir.clamp_length_max(1.0) } else { Vec2::ZERO };
+        let wanted = dir * MOVE_SPEED;
+        p.vel += (wanted - p.vel) * (ACCEL * DT).min(1.0);
+        p.vel = p.vel.clamp_length_max(MAX_SPEED);
+
+        // Move one axis at a time so a player slides along walls instead of
+        // sticking to them.
+        let nx = p.pos + vec2(p.vel.x * DT, 0.0);
+        if self.map.circle_hits_wall(nx, PLAYER_RADIUS) {
+            p.vel.x = 0.0;
+        } else {
+            p.pos = nx;
+        }
+        let ny = p.pos + vec2(0.0, p.vel.y * DT);
+        if self.map.circle_hits_wall(ny, PLAYER_RADIUS) {
+            p.vel.y = 0.0;
+        } else {
+            p.pos = ny;
+        }
+
+        if input.fire {
+            self.try_fire(i);
+        }
+    }
+
+    fn try_fire(&mut self, i: usize) {
+        let p = &mut self.players[i];
+        let (pos, aim) = (p.pos, p.aim);
+        let w = &mut p.weapons[p.current];
+        if w.cooldown > 0.0 || w.reload > 0.0 || w.ammo == 0 {
+            return;
+        }
+        let def = &WEAPONS[w.id as usize];
+        let id = w.id;
+        w.ammo -= 1;
+        w.cooldown = def.cooldown;
+        if w.ammo == 0 {
+            w.reload = def.reload; // auto-reload as soon as the magazine empties
+        }
+
+        let angle = aim + self.rng.range(-def.spread, def.spread);
+        let dir = vec2(angle.cos(), angle.sin());
+        let muzzle = pos + dir * (PLAYER_RADIUS + 4.0);
+        self.events.push(Event::Shot { player: i as u8, weapon: id, pos: muzzle });
+
+        match def.kind {
+            Kind::Projectile => self.projectiles.push(Projectile {
+                pos: muzzle,
+                vel: dir * def.speed,
+                weapon: id,
+                owner: i as u8,
+                life: def.lifetime,
+            }),
+            Kind::Beam => self.fire_beam(i, def, muzzle, dir),
+        }
+    }
+
+    /// Hitscan: no flying object, the line is resolved instantly.
+    fn fire_beam(&mut self, owner: usize, def: &WeaponDef, origin: Vec2, dir: Vec2) {
+        // 1) Walk along the ray to find where it ends, cutting bricks on the way.
+        let mut bricks_left = def.beam_bricks;
+        let mut end = origin + dir * def.range;
+        let mut dist = 0.0;
+        let mut last_tile = (i32::MIN, i32::MIN);
+        while dist < def.range {
+            let p = origin + dir * dist;
+            let (tx, ty) = tile_coords(p);
+            if (tx, ty) != last_tile {
+                last_tile = (tx, ty);
+                match self.map.get(tx, ty) {
+                    Tile::Empty => {}
+                    Tile::Solid => {
+                        end = p;
+                        break;
+                    }
+                    Tile::Brick(hp) => {
+                        let destroyed = def.tile_damage >= hp;
+                        self.hurt_tile(tx, ty, def.tile_damage);
+                        if !destroyed || bricks_left == 0 {
+                            end = p;
+                            break;
+                        }
+                        bricks_left -= 1;
+                    }
+                }
+            }
+            dist += 2.0;
+        }
+        self.events.push(Event::Beam { from: origin, to: end });
+
+        // 2) Everything within a body-width of that line gets hit. The beam
+        //    pierces, so it is not a "first hit only" test.
+        for v in 0..self.players.len() {
+            if v == owner || !self.players[v].alive {
+                continue;
+            }
+            if point_segment_distance(self.players[v].pos, origin, end) < PLAYER_RADIUS {
+                self.damage_player(v, def.damage, owner, dir * def.knockback);
+            }
+        }
+    }
+
+    fn respawn(&mut self, i: usize) {
+        // Pick the spawn point farthest from living enemies, with a little
+        // random jitter so ties are not always broken the same way.
+        let enemies: Vec<Vec2> = (0..self.players.len())
+            .filter(|&j| j != i && self.players[j].alive)
+            .map(|j| self.players[j].pos)
+            .collect();
+        let mut best = (f32::MIN, self.map.spawns[0]);
+        for &s in &self.map.spawns.clone() {
+            let nearest = enemies.iter().map(|e| e.distance(s)).fold(f32::MAX, f32::min);
+            let score = nearest.min(2000.0) + self.rng.range(0.0, 50.0);
+            if score > best.0 {
+                best = (score, s);
+            }
+        }
+        let p = &mut self.players[i];
+        p.pos = best.1;
+        p.vel = Vec2::ZERO;
+        p.hp = MAX_HP;
+        p.alive = true;
+        p.invuln = SPAWN_INVULN;
+        p.weapons = p.weapons.iter().map(|w| full_weapon(w.id)).collect();
+        self.events.push(Event::Respawned { player: i as u8 });
+    }
+
+    /// The single place where a player loses health. Funnelling every source of
+    /// damage through one function means self-damage, spawn protection, kill
+    /// credit and scoring live in exactly one spot.
+    fn damage_player(&mut self, victim: usize, amount: f32, source: usize, impulse: Vec2) {
+        let p = &mut self.players[victim];
+        if !p.alive || p.invuln > 0.0 {
+            return;
+        }
+        let amount = if victim == source { amount * SELF_DAMAGE } else { amount };
+        p.hp -= amount;
+        p.vel += impulse; // knockback is NOT reduced for self-hits
+        let pos = p.pos;
+        let dead = p.hp <= 0.0;
+        if amount > 0.0 {
+            self.events.push(Event::Hit { victim: victim as u8, pos, damage: amount });
+        }
+        if dead {
+            let p = &mut self.players[victim];
+            p.alive = false;
+            p.hp = 0.0;
+            p.respawn_timer = RESPAWN_TIME;
+            p.deaths += 1;
+            // Killing yourself costs a point; killing someone else earns one.
+            self.players[source].kills += if victim == source { -1 } else { 1 };
+            self.events.push(Event::Died { victim: victim as u8, killer: source as u8, pos });
+            let score = self.players[source].kills;
+            if score >= SCORE_LIMIT && self.winner.is_none() {
+                self.winner = Some(source as u8);
+                self.events.push(Event::MatchWon { player: source as u8 });
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ projectiles
+
+    fn step_projectiles(&mut self) {
+        // Take the list out so we can call `&mut self` methods while looping,
+        // then put the survivors back.
+        let old = std::mem::take(&mut self.projectiles);
+        let mut keep = Vec::with_capacity(old.len());
+        'next: for mut pr in old {
+            let def = &WEAPONS[pr.weapon as usize];
+            pr.life -= DT;
+
+            // Move in sub-steps of at most 8 px so a fast bolt cannot jump
+            // over a thin wall or a player between two ticks ("tunnelling").
+            let n = ((pr.vel.length() * DT) / 8.0).ceil().max(1.0) as i32;
+            let step = pr.vel * DT / n as f32;
+            let dir = pr.vel.normalize_or_zero();
+            for _ in 0..n {
+                pr.pos += step;
+
+                let (tx, ty) = tile_coords(pr.pos);
+                if self.map.get(tx, ty).blocks() {
+                    self.impact(&pr, def, dir, None, Some((tx, ty)));
+                    continue 'next;
+                }
+                let hit = (0..self.players.len()).find(|&j| {
+                    j != pr.owner as usize
+                        && self.players[j].alive
+                        && self.players[j].pos.distance(pr.pos) < PLAYER_RADIUS + PROJECTILE_RADIUS
+                });
+                if let Some(j) = hit {
+                    self.impact(&pr, def, dir, Some(j), None);
+                    continue 'next;
+                }
+            }
+
+            if pr.life <= 0.0 {
+                if def.blast_radius > 0.0 {
+                    self.explode(pr.pos, def, pr.owner as usize);
+                }
+                continue;
+            }
+            keep.push(pr);
+        }
+        self.projectiles = keep;
+    }
+
+    /// A projectile ended its flight against a wall or a player.
+    fn impact(&mut self, pr: &Projectile, def: &WeaponDef, dir: Vec2, victim: Option<usize>, wall: Option<(i32, i32)>) {
+        if def.blast_radius > 0.0 {
+            self.explode(pr.pos, def, pr.owner as usize);
+            return;
+        }
+        if let Some(v) = victim {
+            self.damage_player(v, def.damage, pr.owner as usize, dir * def.knockback);
+        }
+        if let Some((tx, ty)) = wall {
+            if def.tile_damage > 0 {
+                self.hurt_tile(tx, ty, def.tile_damage);
+            }
+        }
+    }
+
+    /// Damage falls off linearly with distance. Blasts also ignore walls (a
+    /// brick does not shield you); that keeps the rule simple and can be
+    /// revisited if it plays badly.
+    fn explode(&mut self, pos: Vec2, def: &WeaponDef, owner: usize) {
+        self.events.push(Event::Explosion { pos, radius: def.blast_radius });
+
+        for v in 0..self.players.len() {
+            let offset = self.players[v].pos - pos;
+            let reach = def.blast_radius + PLAYER_RADIUS;
+            let d = offset.length();
+            if !self.players[v].alive || d >= reach {
+                continue;
+            }
+            let falloff = 1.0 - d / reach;
+            let impulse = offset.normalize_or_zero() * def.knockback * falloff;
+            self.damage_player(v, def.blast_damage * falloff, owner, impulse);
+        }
+
+        if def.tile_damage > 0 {
+            let (x0, y0) = tile_coords(pos - Vec2::splat(def.blast_radius));
+            let (x1, y1) = tile_coords(pos + Vec2::splat(def.blast_radius));
+            for ty in y0..=y1 {
+                for tx in x0..=x1 {
+                    if tile_center(tx, ty).distance(pos) < def.blast_radius + TILE * 0.25 {
+                        self.hurt_tile(tx, ty, def.tile_damage);
+                    }
+                }
+            }
+        }
+    }
+
+    fn hurt_tile(&mut self, tx: i32, ty: i32, amount: u8) {
+        if let Some(tile) = self.map.damage(tx, ty, amount) {
+            self.events.push(Event::TileChanged { x: tx, y: ty, tile });
+        }
+    }
+}
+
+fn full_weapon(id: u8) -> WeaponState {
+    WeaponState { id, ammo: WEAPONS[id as usize].mag, cooldown: 0.0, reload: 0.0 }
+}
+
+fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    let t = if len2 == 0.0 { 0.0 } else { ((p - a).dot(ab) / len2).clamp(0.0, 1.0) };
+    p.distance(a + ab * t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tilemap::MAP_GRID;
+    use crate::weapons::{BLASTER, RAILGUN, ROCKET};
+
+    // These tests need no window, GPU or sound: the payoff of keeping the sim
+    // free of rendering code.
+
+    fn two_player_world() -> World {
+        let mut w = World::new(Tilemap::from_ascii(MAP_GRID), 2, &[BLASTER, ROCKET, RAILGUN], 1);
+        // Row 1 of the Grid map: tiles 2 and 3 are empty, 4 and 5 are bricks, 6 is empty.
+        w.players[0].pos = tile_center(1, 1);
+        w.players[1].pos = tile_center(3, 1);
+        w
+    }
+
+    fn fire_once(w: &mut World, who: usize, weapon: u8, aim: f32) {
+        let mut inputs = vec![Input::default(); w.players.len()];
+        inputs[who] = Input { fire: true, weapon, aim, ..Default::default() };
+        w.step(&inputs);
+        for _ in 0..30 {
+            w.step(&[]);
+        }
+    }
+
+    #[test]
+    fn blaster_bolt_damages_enemy() {
+        let mut w = two_player_world();
+        fire_once(&mut w, 0, 0, 0.0);
+        assert!(w.players[1].hp < MAX_HP);
+    }
+
+    #[test]
+    fn killing_scores_and_victim_respawns() {
+        let mut w = two_player_world();
+        w.players[1].hp = 5.0;
+        fire_once(&mut w, 0, 0, 0.0);
+        assert!(!w.players[1].alive);
+        assert_eq!(w.players[0].kills, 1);
+        for _ in 0..(RESPAWN_TIME / DT) as i32 + 5 {
+            w.step(&[]);
+        }
+        assert!(w.players[1].alive);
+        assert_eq!(w.players[1].hp, MAX_HP);
+    }
+
+    #[test]
+    fn rocket_destroys_brick_and_reports_it() {
+        let mut w = two_player_world();
+        w.players[1].pos = tile_center(30, 10); // out of the way
+        w.drain_events();
+        fire_once(&mut w, 0, 1, 0.0);
+        assert_eq!(w.map.get(4, 1), Tile::Empty);
+        let events = w.drain_events();
+        assert!(events.iter().any(|e| matches!(e, Event::TileChanged { x: 4, y: 1, tile: Tile::Empty })));
+    }
+
+    #[test]
+    fn rocket_at_own_feet_is_halved_and_scores_nothing() {
+        let mut w = two_player_world();
+        w.players[1].pos = tile_center(30, 10);
+        w.players[0].pos = tile_center(1, 1);
+        // Aim at the wall right behind us (left).
+        fire_once(&mut w, 0, 1, std::f32::consts::PI);
+        let p = &w.players[0];
+        assert!(p.hp < MAX_HP && p.hp > MAX_HP - 40.0, "self damage is halved, hp = {}", p.hp);
+        assert_eq!(w.players[0].kills, 0); // surviving a self-hit scores nothing
+    }
+
+    #[test]
+    fn railgun_cuts_two_bricks_and_hits_player_behind() {
+        let mut w = two_player_world();
+        w.players[1].pos = tile_center(6, 1); // behind bricks at tiles 4 and 5
+        fire_once(&mut w, 0, 2, 0.0);
+        assert_eq!(w.map.get(4, 1), Tile::Empty);
+        assert_eq!(w.map.get(5, 1), Tile::Empty);
+        assert!(w.players[1].hp < MAX_HP);
+    }
+
+    #[test]
+    fn empty_magazine_triggers_reload() {
+        let mut w = two_player_world();
+        w.players[1].pos = tile_center(30, 10);
+        // Railgun has a 1-round magazine.
+        let shoot = [Input { fire: true, weapon: 2, ..Default::default() }];
+        w.step(&shoot);
+        assert_eq!(w.players[0].weapons[2].ammo, 0);
+        assert!(w.players[0].weapons[2].reload > 0.0);
+        for _ in 0..(2.6 / DT) as i32 {
+            w.step(&[Input { weapon: 2, ..Default::default() }]);
+        }
+        assert_eq!(w.players[0].weapons[2].ammo, 1);
+    }
+
+    #[test]
+    fn oversized_move_input_is_clamped() {
+        let mut w = two_player_world();
+        w.players[1].pos = tile_center(30, 10);
+        let cheat = Input { move_dir: vec2(1000.0, 0.0), ..Default::default() };
+        for _ in 0..60 {
+            w.step(&[cheat]);
+        }
+        // One second at full speed is at most ~MOVE_SPEED px.
+        assert!(w.players[0].vel.length() <= MOVE_SPEED + 1.0);
+    }
+
+    #[test]
+    fn same_inputs_give_same_world() {
+        // The property netcode will lean on: the sim is deterministic.
+        let script = |t: u32| Input {
+            move_dir: vec2((t as f32 * 0.1).cos(), (t as f32 * 0.07).sin()),
+            aim: t as f32 * 0.05,
+            fire: t % 7 == 0,
+            weapon: ((t / 50) % 3) as u8,
+            ..Default::default()
+        };
+        let run = || {
+            let mut w = World::new(Tilemap::from_ascii(MAP_GRID), 3, &[BLASTER, ROCKET, RAILGUN], 42);
+            for t in 0..900 {
+                w.step(&[script(t), script(t + 100), script(t + 200)]);
+            }
+            w
+        };
+        let (a, b) = (run(), run());
+        for (pa, pb) in a.players.iter().zip(&b.players) {
+            assert_eq!(pa.pos, pb.pos);
+            assert_eq!(pa.hp, pb.hp);
+            assert_eq!(pa.kills, pb.kills);
+        }
+        for y in 0..crate::tilemap::MAP_H as i32 {
+            for x in 0..crate::tilemap::MAP_W as i32 {
+                assert_eq!(a.map.get(x, y), b.map.get(x, y));
+            }
+        }
+    }
+}

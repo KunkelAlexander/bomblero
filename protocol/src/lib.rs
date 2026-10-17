@@ -1,0 +1,108 @@
+// The language that clients and the host speak. Nothing in here does anything:
+// it is only message shapes plus turning them into bytes and back.
+//
+// Why a crate of its own: the game (client), the host and the relay server all
+// have to agree on these shapes. One shared definition means they cannot drift
+// apart, and the compiler checks every side whenever a message changes.
+//
+// The conversation, in full:
+//
+//   client                                  host
+//     │ ── ClientMsg::Input ────────────────> │   "here is what my player wants"
+//     │                                       │   (host steps the sim)
+//     │ <──────────── HostMsg::Welcome ────── │   once, when you join
+//     │ <──────────── HostMsg::Snapshot ───── │   again and again: "here is the world"
+//
+// Networking concepts used below:
+//   * Authority: only the host changes the world. Clients send *wishes*
+//     (inputs) and receive *facts* (snapshots). A client cannot say "I hit
+//     him" or "I am at x=5"; it can only say "I am pressing fire".
+//   * Tick: the sim's step counter. It labels snapshots so a client knows which
+//     moment of the match it is looking at.
+
+pub mod replica;
+
+use serde::{Deserialize, Serialize};
+use sim::{Event, Input, Player, Projectile, Tile};
+
+/// Which player slot a connection controls. The host decides it, never the
+/// client (otherwise a client could claim to be someone else).
+pub type PlayerId = u8;
+
+/// Client -> host.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum ClientMsg {
+    /// The player's wishes for now. Sent once per rendered frame; the host
+    /// keeps only the newest one per player.
+    Input(Input),
+}
+
+/// Host -> client.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum HostMsg {
+    Welcome(Welcome),
+    Snapshot(Snapshot),
+}
+
+/// Sent once to a new arrival: everything needed to start from scratch.
+/// This is the "late joiner" message.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Welcome {
+    /// The slot this client controls.
+    pub you: PlayerId,
+    /// The whole terrain right now. Snapshots only carry *changes* to it
+    /// (`Event::TileChanged`), so a newcomer needs the full grid exactly once.
+    pub tiles: Vec<Tile>,
+    /// The world right now, so there is something valid to draw immediately.
+    pub snapshot: Snapshot,
+}
+
+/// "This is what the world looks like." Everything that moves, plus what
+/// happened since the previous snapshot.
+///
+/// The terrain is deliberately absent (see `Welcome`).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Snapshot {
+    /// The sim tick this snapshot was taken after.
+    pub tick: u32,
+    pub players: Vec<Player>,
+    pub projectiles: Vec<Projectile>,
+    pub winner: Option<u8>,
+    /// Events since the last snapshot. Clients turn them into explosions and
+    /// sounds, and apply `TileChanged` to their copy of the map.
+    pub events: Vec<Event>,
+}
+
+// ---- bytes ---------------------------------------------------------------
+//
+// A network carries bytes, not Rust values. Every message is encoded right
+// before sending and decoded right after receiving. We do this even for the
+// in-process loopback so the encoding is exercised on every single run.
+
+/// Anything bigger than this is rejected before decoding. The bytes come from
+/// the outside world, so we never trust their size.
+const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+
+pub fn encode_client(msg: &ClientMsg) -> Vec<u8> {
+    bincode::serialize(msg).expect("encoding a message cannot fail")
+}
+
+pub fn encode_host(msg: &HostMsg) -> Vec<u8> {
+    bincode::serialize(msg).expect("encoding a message cannot fail")
+}
+
+/// `None` means the bytes were garbage. Callers drop such messages: a peer
+/// sending nonsense must never be able to crash us.
+pub fn decode_client(bytes: &[u8]) -> Option<ClientMsg> {
+    if bytes.len() > MAX_MESSAGE_BYTES {
+        return None;
+    }
+    bincode::deserialize(bytes).ok()
+}
+
+pub fn decode_host(bytes: &[u8]) -> Option<HostMsg> {
+    if bytes.len() > MAX_MESSAGE_BYTES {
+        return None;
+    }
+    bincode::deserialize(bytes).ok()
+}

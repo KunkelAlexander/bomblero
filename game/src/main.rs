@@ -1,95 +1,92 @@
-// M0: prove the toolchain. A neon triangle rendered through a glow shader,
-// running both natively and in the browser. Nothing here is game logic yet.
+// The game executable: glue between the platform (window, input devices,
+// display) and the sim. It owns no game rules.
+//
+//   devices -> controls -> Input ─┐
+//   bots ---------------> Input ──┼─> World::step (60 Hz) -> state + events
+//                                 │                              │
+//                                 │            draw / effects <──┘
+//
+// Everything left of `World::step` produces Commands; everything right of it
+// only reads.
 
+mod controls;
+mod draw;
+mod effects;
 mod shaders;
+mod view;
 
 use macroquad::prelude::*;
+use sim::bots::Bot;
+use sim::tilemap::{Tilemap, MAP_GRID};
+use sim::weapons::{BLASTER, RAILGUN, ROCKET};
+use sim::{Input, World, DT};
 
-// The game always renders at a fixed logical resolution and the window just
-// shows it. That way every player sees the same map size, which matters
-// for fairness in a shooter and keeps the later netcode free of screen-size
-// concerns.
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 720;
+const LOCAL_PLAYER: usize = 0;
+const PLAYER_COUNT: usize = 4; // you + 3 bots
 
 fn window_conf() -> Conf {
     Conf {
         window_title: "Neon Bomber".to_owned(),
-        window_width: WIDTH,
-        window_height: HEIGHT,
+        window_width: view::WIDTH as i32,
+        window_height: view::HEIGHT as i32,
         window_resizable: false,
         ..Default::default()
     }
 }
 
-#[macroquad::main(window_conf)]
-async fn main() {
-    // Pattern: Game Loop. macroquad owns the outer loop (`next_frame().await`
-    // below). Later, the sim will run inside it at a fixed 60 Hz while drawing
-    // happens at whatever rate the display runs.
-
-    // Scene is drawn into this texture first; the glow shader then reads it.
-    let scene = render_target(WIDTH as u32, HEIGHT as u32);
-    scene.texture.set_filter(FilterMode::Linear);
-
-    let glow_material = load_material(
-        ShaderSource::Glsl {
-            vertex: shaders::VERTEX,
-            fragment: shaders::GLOW_FRAGMENT,
-        },
-        MaterialParams {
-            uniforms: vec![UniformDesc::new("texel", UniformType::Float2)],
-            ..Default::default()
-        },
-    )
-    .expect("glow shader failed to compile");
-    glow_material.set_uniform("texel", vec2(1.0 / WIDTH as f32, 1.0 / HEIGHT as f32));
-
-    loop {
-        let t = get_time() as f32;
-
-        // 1) Draw the sharp scene into the offscreen texture.
-        let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, WIDTH as f32, HEIGHT as f32));
-        cam.render_target = Some(scene.clone());
-        set_camera(&cam);
-        clear_background(BLACK);
-        draw_neon_triangle(vec2(WIDTH as f32 / 2.0, HEIGHT as f32 / 2.0), 180.0, t);
-
-        // 2) Draw that texture to the screen through the glow shader.
-        set_default_camera();
-        clear_background(BLACK);
-        // Letterbox: scale uniformly to fit and centre, so a window that is not
-        // 16:9 gets black bars instead of a stretched picture.
-        let scale = (screen_width() / WIDTH as f32).min(screen_height() / HEIGHT as f32);
-        let (w, h) = (WIDTH as f32 * scale, HEIGHT as f32 * scale);
-        gl_use_material(&glow_material);
-        draw_texture_ex(
-            &scene.texture,
-            (screen_width() - w) / 2.0,
-            (screen_height() - h) / 2.0,
-            WHITE,
-            DrawTextureParams {
-                dest_size: Some(vec2(w, h)),
-                // Render targets are stored upside down relative to the screen.
-                flip_y: true,
-                ..Default::default()
-            },
-        );
-        gl_use_default_material();
-
-        next_frame().await;
-    }
+fn new_match() -> (World, Vec<Bot>) {
+    let seed = (macroquad::miniquad::date::now() * 1000.0) as u32;
+    let world = World::new(Tilemap::from_ascii(MAP_GRID), PLAYER_COUNT, &[BLASTER, ROCKET, RAILGUN], seed);
+    // One brain per player slot; slot 0 is the human so its brain goes unused.
+    let bots = (0..PLAYER_COUNT).map(|i| Bot::new(seed.wrapping_add(i as u32 * 7919))).collect();
+    (world, bots)
 }
 
-// Neon look = thin, saturated outlines on black. The shader supplies the halo.
-fn draw_neon_triangle(center: Vec2, radius: f32, t: f32) {
-    let color = Color::new(0.1, 1.0, 0.9, 1.0);
-    let corner = |i: i32| {
-        let a = t * 0.8 + i as f32 * std::f32::consts::TAU / 3.0;
-        center + vec2(a.cos(), a.sin()) * radius
-    };
-    for i in 0..3 {
-        let (a, b) = (corner(i), corner((i + 1) % 3));
-        draw_line(a.x, a.y, b.x, b.y, 3.0, color);
+#[macroquad::main(window_conf)]
+async fn main() {
+    let glow = view::Glow::new();
+    let mut controls = controls::Controls::new();
+    let mut effects = effects::Effects::default();
+    let (mut world, mut bots) = new_match();
+
+    // Pattern: Game Loop. macroquad owns the outer loop (`next_frame().await`).
+    // Inside it we run the sim on a fixed 1/60 s step using an accumulator:
+    // real elapsed time is added to a bucket, and every time the bucket holds a
+    // full tick we spend it on one `step`. A slow frame runs several ticks to
+    // catch up; a fast frame may run none. Drawing happens once per frame
+    // regardless, at whatever rate the monitor runs.
+    let mut bucket = 0.0;
+
+    loop {
+        if is_key_pressed(KeyCode::R) {
+            (world, bots) = new_match();
+        }
+
+        let frame = get_frame_time();
+        // Cap the catch-up: after a long stall (e.g. a background tab) we skip
+        // time instead of freezing while we simulate seconds of ticks.
+        bucket += frame.min(0.1);
+
+        let human = controls.read(&world, LOCAL_PLAYER);
+        while bucket >= DT {
+            let inputs: Vec<Input> = (0..PLAYER_COUNT)
+                .map(|i| if i == LOCAL_PLAYER { human } else { bots[i].think(&world, i) })
+                .collect();
+            world.step(&inputs);
+            bucket -= DT;
+        }
+
+        for event in world.drain_events() {
+            effects.on_event(&event);
+        }
+        effects.update(frame);
+
+        glow.begin();
+        draw::draw_world(&world, get_time() as f32);
+        effects.draw();
+        draw::draw_hud(&world, LOCAL_PLAYER);
+        glow.present();
+
+        next_frame().await;
     }
 }

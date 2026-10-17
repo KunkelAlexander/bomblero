@@ -120,3 +120,8 @@ server/Dockerfile, render.yaml, fly.toml
 - Keep shaders to GLSL 100 and test the glow at lower resolution on integrated GPUs.
 - The host has a latency edge, and clients pay one relay hop. This is acceptable for friends.
 - Render's free-tier terms may have changed since my knowledge, so I'll check the current docs when we reach M2.
+
+
+## Addendum (M1)
+- **Owner requirement: the architecture must allow a later move to a central (dedicated) server.** Done by making the rules a headless `sim` crate and treating "host" as a role. In M2 the host logic lives in one struct (`Host`: inputs by player id -> `World::step` -> snapshots) that does not know whether it runs in a browser or on a server; the relay then simply becomes "relay + Host".
+- `game/src/sim.rs` became the `sim/` crate. Game-side code is split by concern: `view` (camera, letterbox, glow), `controls` (devices -> `Input`), `effects` (cosmetic state built from events), `draw` (reads the world), `main` (loop).

@@ -1,0 +1,11 @@
+[package]
+name = "protocol"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sim = { path = "../sim" }
+serde = { version = "1", features = ["derive"] }
+# bincode turns a Rust value into compact bytes and back. Version 1 is the
+# simple "serialize / deserialize" one.
+bincode = "1.3"

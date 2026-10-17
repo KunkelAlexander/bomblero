@@ -1,0 +1,216 @@
+// The terrain: a grid of square tiles.
+//
+// Pattern: Spatial Partition. The grid IS the partition. To ask "what does this
+// circle touch?" we look up the 4 or so tiles under it instead of testing
+// against every wall. It also makes destruction trivial (change one cell) and
+// networking cheap (a changed tile is just `(x, y, tile)`).
+
+use glam::{vec2, Vec2};
+use serde::{Deserialize, Serialize};
+
+pub const TILE: f32 = 32.0;
+pub const MAP_W: usize = 40;
+pub const MAP_H: usize = 22;
+pub const BRICK_HP: u8 = 3;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum Tile {
+    Empty,
+    /// Indestructible wall.
+    Solid,
+    /// Destructible wall. The number is its remaining hit points.
+    Brick(u8),
+}
+
+impl Tile {
+    /// Does this tile stop players and projectiles?
+    pub fn blocks(self) -> bool {
+        self != Tile::Empty
+    }
+}
+
+pub struct Tilemap {
+    tiles: Vec<Tile>,
+    /// Where players may (re)appear. Read from the 'S' characters in the map.
+    pub spawns: Vec<Vec2>,
+}
+
+impl Tilemap {
+    /// Build a map from ASCII art. '#' solid, 'b' brick, '.' empty, 'S' spawn.
+    /// Maps live in the source as text so they are easy to read and edit, and
+    /// we need no asset files.
+    pub fn from_ascii(art: &str) -> Tilemap {
+        let rows: Vec<&str> = art.lines().collect();
+        assert_eq!(rows.len(), MAP_H, "map must have {MAP_H} rows");
+        let mut tiles = Vec::with_capacity(MAP_W * MAP_H);
+        let mut spawns = Vec::new();
+        for (y, row) in rows.iter().enumerate() {
+            assert_eq!(row.len(), MAP_W, "map row {y} must be {MAP_W} wide");
+            for (x, ch) in row.chars().enumerate() {
+                tiles.push(match ch {
+                    '#' => Tile::Solid,
+                    'b' => Tile::Brick(BRICK_HP),
+                    'S' => {
+                        spawns.push(tile_center(x as i32, y as i32));
+                        Tile::Empty
+                    }
+                    _ => Tile::Empty,
+                });
+            }
+        }
+        Tilemap { tiles, spawns }
+    }
+
+    /// Anything outside the map counts as solid, so nothing can ever leave it
+    /// and callers never need bounds checks.
+    pub fn get(&self, tx: i32, ty: i32) -> Tile {
+        if tx < 0 || ty < 0 || tx >= MAP_W as i32 || ty >= MAP_H as i32 {
+            return Tile::Solid;
+        }
+        self.tiles[ty as usize * MAP_W + tx as usize]
+    }
+
+    pub fn set(&mut self, tx: i32, ty: i32, tile: Tile) {
+        if tx >= 0 && ty >= 0 && tx < MAP_W as i32 && ty < MAP_H as i32 {
+            self.tiles[ty as usize * MAP_W + tx as usize] = tile;
+        }
+    }
+
+    /// The whole grid, row by row. A player who joins mid-match gets this once;
+    /// after that only `TileChanged` events are sent.
+    pub fn tiles(&self) -> &[Tile] {
+        &self.tiles
+    }
+
+    /// Overwrite the whole grid (the receiving end of `tiles`).
+    /// Ignores a slice of the wrong size rather than trusting the sender.
+    pub fn load_tiles(&mut self, tiles: &[Tile]) {
+        if tiles.len() == self.tiles.len() {
+            self.tiles.copy_from_slice(tiles);
+        }
+    }
+
+    pub fn tile_at(&self, p: Vec2) -> Tile {
+        let (tx, ty) = tile_coords(p);
+        self.get(tx, ty)
+    }
+
+    /// Hurt a brick. Returns the tile's new value if something changed, so the
+    /// caller can announce it (the sim turns that into a `TileChanged` event).
+    pub fn damage(&mut self, tx: i32, ty: i32, amount: u8) -> Option<Tile> {
+        if let Tile::Brick(hp) = self.get(tx, ty) {
+            let new = if hp > amount { Tile::Brick(hp - amount) } else { Tile::Empty };
+            self.set(tx, ty, new);
+            Some(new)
+        } else {
+            None
+        }
+    }
+
+    /// Does a circle overlap any blocking tile?
+    pub fn circle_hits_wall(&self, c: Vec2, r: f32) -> bool {
+        let (x0, y0) = tile_coords(c - Vec2::splat(r));
+        let (x1, y1) = tile_coords(c + Vec2::splat(r));
+        for ty in y0..=y1 {
+            for tx in x0..=x1 {
+                if self.get(tx, ty).blocks() {
+                    // Nearest point of the tile's square to the circle centre.
+                    let min = vec2(tx as f32 * TILE, ty as f32 * TILE);
+                    let nearest = c.clamp(min, min + Vec2::splat(TILE));
+                    if nearest.distance_squared(c) < r * r {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Distance from `from` along `dir` (unit vector) to the first blocking
+    /// tile, or `max` if nothing is in the way.
+    pub fn distance_to_wall(&self, from: Vec2, dir: Vec2, max: f32) -> f32 {
+        let mut d = 0.0;
+        while d < max {
+            if self.tile_at(from + dir * d).blocks() {
+                return d;
+            }
+            d += 4.0;
+        }
+        max
+    }
+
+    /// Can `a` see `b`? Marches along the segment in small steps.
+    /// Why marching and not an exact grid walk: the tiles are 32 px and we step
+    /// 4 px, so it can only miss a corner graze, and it is much easier to read.
+    pub fn line_of_sight(&self, a: Vec2, b: Vec2) -> bool {
+        let d = b - a;
+        let steps = (d.length() / 4.0).ceil().max(1.0) as i32;
+        (1..steps).all(|i| !self.tile_at(a + d * (i as f32 / steps as f32)).blocks())
+    }
+}
+
+pub fn tile_coords(p: Vec2) -> (i32, i32) {
+    ((p.x / TILE).floor() as i32, (p.y / TILE).floor() as i32)
+}
+
+pub fn tile_center(tx: i32, ty: i32) -> Vec2 {
+    vec2((tx as f32 + 0.5) * TILE, (ty as f32 + 0.5) * TILE)
+}
+
+/// Map 1: "Grid". Bomberman-style pillars with bricks in between, mirrored
+/// left-right and top-bottom so no spawn is luckier than another.
+pub const MAP_GRID: &str = "\
+########################################
+#S..bb.b.bb.bbbbb.bbbb.bbbbb.bb.b.bb..S#
+#.#.#.#.#.#b#.#b#.#bb#.#b#.#b#.#.#.#.#.#
+#...bbb.b..b.bbb.bb..bb.bbb.b..b.bbb...#
+#b#b#.#.#b#.#.#.#.#bb#.#.#.#.#b#.#.#b#b#
+#.bb.bbb....b...b..bb..b...b....bbb.bb.#
+#.#b#.#.#.#.#b#b#.#bb#.#b#b#.#.#.#.#b#.#
+#bbbb.bbb.bb....bbb..bbb....bb.bbb.bbbb#
+#.#b#b#b#b#b#.#b#b#bb#b#b#.#b#b#b#b#b#.#
+#b......b....bbb.bbbbbb.bbb....b......b#
+#b#b#b#b#b#b#b#b#.#S.#.#b#b#b#b#b#b#b#b#
+#b#b#b#b#b#b#b#b#.#.S#.#b#b#b#b#b#b#b#b#
+#b......b....bbb.bbbbbb.bbb....b......b#
+#.#b#b#b#b#b#.#b#b#bb#b#b#.#b#b#b#b#b#.#
+#bbbb.bbb.bb....bbb..bbb....bb.bbb.bbbb#
+#.#b#.#.#.#.#b#b#.#bb#.#b#b#.#.#.#.#b#.#
+#.bb.bbb....b...b..bb..b...b....bbb.bb.#
+#b#b#.#.#b#.#.#.#.#bb#.#.#.#.#b#.#.#b#b#
+#...bbb.b..b.bbb.bb..bb.bbb.b..b.bbb...#
+#.#.#.#.#.#b#.#b#.#bb#.#b#.#b#.#.#.#.#.#
+#S..bb.b.bb.bbbbb.bbbb.bbbbb.bb.b.bb..S#
+########################################";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_map_parses_and_has_spawns() {
+        let map = Tilemap::from_ascii(MAP_GRID);
+        assert_eq!(map.spawns.len(), 6);
+        // Every spawn must be a free tile, or a player would start inside a wall.
+        for s in &map.spawns {
+            assert!(!map.circle_hits_wall(*s, 10.0));
+        }
+    }
+
+    #[test]
+    fn brick_takes_three_hits() {
+        let mut map = Tilemap::from_ascii(MAP_GRID);
+        // Tile (4,1) is a brick in the Grid map.
+        assert_eq!(map.get(4, 1), Tile::Brick(3));
+        assert_eq!(map.damage(4, 1, 1), Some(Tile::Brick(2)));
+        assert_eq!(map.damage(4, 1, 2), Some(Tile::Empty));
+        assert_eq!(map.damage(4, 1, 1), None); // nothing left to hurt
+    }
+
+    #[test]
+    fn solid_is_indestructible_and_outside_is_solid() {
+        let mut map = Tilemap::from_ascii(MAP_GRID);
+        assert_eq!(map.damage(0, 0, 99), None);
+        assert_eq!(map.get(-5, 3), Tile::Solid);
+    }
+}

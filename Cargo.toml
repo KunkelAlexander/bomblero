@@ -1,7 +1,11 @@
-# Workspace root. Only the game crate exists for now; `protocol` and `server`
-# join in milestone M2 (online).
+# Workspace root. `protocol` and `server` join in milestone M2 (online).
+#
+# Why `sim` is its own crate: it has NO dependency on macroquad (no window, no
+# GPU, no clock). Anything that can run Rust can run the game rules: the
+# player's browser today, a dedicated server tomorrow. That is what keeps the
+# door open to a central server without a rewrite.
 [workspace]
-members = ["game"]
+members = ["game", "sim"]
 resolver = "2"
 
 [profile.release]
