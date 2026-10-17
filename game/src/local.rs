@@ -47,7 +47,9 @@ impl LocalGame {
         let peer = welcome.you;
         link.host_send(&HostMsg::Welcome(welcome));
         let replica = match link.client_recv() {
-            Some(HostMsg::Welcome(w)) => Replica::new(w),
+            // Delay 0: no interpolation. The wire is a function call, so there
+            // is no jitter to hide, and the local player gets no extra lag.
+            Some(HostMsg::Welcome(w)) => Replica::new(w, 0),
             _ => unreachable!("the loopback delivers the Welcome we just sent"),
         };
 

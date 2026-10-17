@@ -12,6 +12,11 @@
 // travels back: at least one round trip, plus up to one snapshot interval.
 // There is no client-side prediction (yet), so you feel all of it. The ping in
 // the corner is that round trip, measured with a token the host echoes back.
+//
+// On top of that the replica plays snapshots back `INTERP_DELAY` ticks late so
+// motion is smooth (see `protocol::replica`). Press I to switch that off and see
+// the raw 30 Hz steps; the cost of smoothness is that everything, including your
+// own player, is drawn ~100 ms in the past.
 
 use macroquad::prelude::*;
 use protocol::replica::Replica;
@@ -25,8 +30,15 @@ use crate::present::Presenter;
 use crate::socket::SocketState;
 use crate::view::Glow;
 
+/// How far behind the newest snapshot we draw: 6 ticks = 100 ms. Snapshots
+/// come every 2 ticks, so this keeps two or three in the buffer: enough to
+/// ride out one late packet without a stall.
+const INTERP_DELAY: u32 = 6;
+
 pub struct JoinGame {
     link: RelayLink,
+    /// Interpolation on? (Toggled with I, to make the effect visible.)
+    interpolate: bool,
     code: String,
     /// Have we asked the relay to let us in yet? (Only possible once it is open.)
     asked: bool,
@@ -49,6 +61,7 @@ impl JoinGame {
     pub fn new(code: String) -> JoinGame {
         JoinGame {
             link: RelayLink::connect(RELAY_URL),
+            interpolate: true,
             code,
             asked: false,
             in_room: false,
@@ -69,6 +82,11 @@ impl JoinGame {
 
         if self.problem.is_none() {
             if let Some(replica) = &mut self.replica {
+                if is_key_pressed(KeyCode::I) {
+                    self.interpolate = !self.interpolate;
+                    replica.set_delay(delay_for(self.interpolate));
+                }
+
                 // Read the devices every frame (key *presses* are one-frame
                 // events), but send at most once per sim tick. The host keeps
                 // only the newest input per tick anyway, so on a 144 Hz
@@ -82,9 +100,10 @@ impl JoinGame {
                     self.link.send(&ToRelay::Data { to: None, bytes });
                 }
 
+                let smooth = if self.interpolate { "smoothing on" } else { "smoothing off" };
                 let banner = match self.rtt_ms {
-                    Some(ms) => format!("room {}  -  ping {ms:.0} ms", self.code),
-                    None => format!("room {}", self.code),
+                    Some(ms) => format!("room {}  -  ping {ms:.0} ms  -  {smooth} (I)", self.code),
+                    None => format!("room {}  -  {smooth} (I)", self.code),
                 };
                 self.presenter.show(replica, self.bytes_up, self.bytes_down, &banner, false, glow);
                 return;
@@ -147,7 +166,9 @@ impl JoinGame {
                     Some(HostMsg::Full) => self.problem = Some("That match is full.".into()),
                     // The first Welcome starts our match; a later one means
                     // the host started a rematch.
-                    Some(HostMsg::Welcome(welcome)) => self.replica = Some(Replica::new(welcome)),
+                    Some(HostMsg::Welcome(welcome)) => {
+                        self.replica = Some(Replica::new(welcome, delay_for(self.interpolate)))
+                    }
                     // Snapshots that arrive before the Welcome are useless
                     // (there is nothing to apply them to) and are dropped.
                     Some(msg) => {
@@ -179,6 +200,10 @@ impl JoinGame {
         }
         center_text("Esc: back", 400.0, 24.0, GRAY);
     }
+}
+
+fn delay_for(interpolate: bool) -> u32 {
+    if interpolate { INTERP_DELAY } else { 0 }
 }
 
 /// Seconds as a wrapping millisecond counter, small enough for a `u32` token.

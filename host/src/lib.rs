@@ -154,7 +154,7 @@ mod tests {
     fn join_as_client(host: &mut Host) -> Replica {
         let welcome = host.join().expect("a free slot");
         match over_the_wire(&HostMsg::Welcome(welcome)) {
-            HostMsg::Welcome(w) => Replica::new(w),
+            HostMsg::Welcome(w) => Replica::new(w, 0),
             _ => unreachable!(),
         }
     }
@@ -172,6 +172,7 @@ mod tests {
             let sent = decode_client(&encode_client(&ClientMsg::Input(input))).unwrap();
             host.handle(replica.me, sent);
             replica.apply(over_the_wire(&HostMsg::Snapshot(host.tick())));
+            replica.advance(0.0); // what the frame loop does before drawing
         }
 
         assert!(replica.world.players[0].pos.x > start_x + 50.0, "player 0 should have walked right");
@@ -194,6 +195,7 @@ mod tests {
         let mut snapshot = host.tick();
         snapshot.events.push(Event::TileChanged { x: 5, y: 5, tile: sim::Tile::Empty });
         replica.apply(over_the_wire(&HostMsg::Snapshot(snapshot)));
+        replica.advance(0.0);
         assert_eq!(replica.world.map.get(5, 5), sim::Tile::Empty);
     }
 

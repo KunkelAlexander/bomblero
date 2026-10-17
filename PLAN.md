@@ -149,3 +149,10 @@ server/Dockerfile, render.yaml, fly.toml
 - `Host::join()` no longer drains events (its Welcome snapshot carries none), which fixes the step-3 caveat.
 - Measured with a unit test (4 players): 24 KB/s at 60 snapshots/s, 12 KB/s at 30. A test keeps this under budget. Bandwidth is ~87 bytes per player per snapshot, mostly floats that change every tick, so quantising or delta-coding would save little for the complexity; deliberately not done. Per-friend rates were also skipped: they would end the single broadcast upload.
 - Consequence: friends now see the world in 30 Hz steps. Step 5 (interpolation) smooths that.
+
+## Addendum (M2 step 5)
+- `Replica` is now a playback buffer (protocol/src/replica.rs): snapshots queue up, a fractional `playhead` runs `delay` ticks (6 = 100 ms) behind the newest one and gently speeds up or slows down to stay there (`CATCH_UP`), or jumps after a long stall (hidden tab). `advance(seconds)` is called once per frame by `Presenter::show`.
+- What is drawn: players blend between the two snapshots around the playhead (angles the short way, no blend across a teleport); projectiles have no id, so they are moved on from the older snapshot along their velocity; events and tile changes are released when the playhead passes their snapshot, so a brick breaks exactly when its explosion shows.
+- Delay 0 = no interpolation: the local host player keeps zero extra lag. Joiners start with 6; the I key toggles it so the effect can be seen.
+- Cost: the joiner sees everything, including their own player, ~100 ms in the past on top of the network round trip. Cutting that for the own player is what client-side prediction would do (M5, only if it feels bad).
+- Not done: a fake-lag/jitter option. On localhost there is no jitter, so the buffer's real job (absorbing late packets) is only unit-tested until we play over the internet.

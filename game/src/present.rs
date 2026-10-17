@@ -22,6 +22,9 @@ impl Presenter {
     /// status for the top left, `can_restart` whether this player may press R.
     pub fn show(&mut self, replica: &mut Replica, up: u64, down: u64, banner: &str, can_restart: bool, glow: &Glow) {
         let frame = get_frame_time();
+        // Move the replica's playhead on by one frame of real time (see
+        // `Replica`), then show what is due.
+        replica.advance(frame);
         for event in replica.drain_events() {
             self.effects.on_event(&event);
         }
