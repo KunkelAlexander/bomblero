@@ -8,11 +8,13 @@ use protocol::replica::Replica;
 use crate::draw;
 use crate::effects::Effects;
 use crate::net::RateMeter;
+use crate::terrain::Terrain;
 use crate::view::Glow;
 
 #[derive(Default)]
 pub struct Presenter {
     effects: Effects,
+    terrain: Terrain,
     up_rate: RateMeter,
     down_rate: RateMeter,
 }
@@ -32,7 +34,10 @@ impl Presenter {
         self.up_rate.update(get_time(), up);
         self.down_rate.update(get_time(), down);
 
+        self.terrain.update(&replica.world.map);
+
         glow.begin();
+        self.terrain.draw(&replica.world.map);
         draw::draw_world(&replica.world, get_time() as f32);
         self.effects.draw();
         draw::draw_hud(&replica.world, replica.me as usize, can_restart);

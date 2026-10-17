@@ -5,7 +5,7 @@
 
 use macroquad::prelude::*;
 use sim::world::{MAX_HP, RESPAWN_TIME, SCORE_LIMIT};
-use sim::{Tile, World, MAP_H, MAP_W, PLAYER_RADIUS, TILE, WEAPONS};
+use sim::{World, PLAYER_RADIUS, WEAPONS};
 
 pub fn player_color(i: usize) -> Color {
     match i % 4 {
@@ -16,38 +16,11 @@ pub fn player_color(i: usize) -> Color {
     }
 }
 
+/// Draws everything except the terrain (see terrain.rs), which the presenter
+/// draws first so it sits underneath.
 pub fn draw_world(world: &World, t: f32) {
-    draw_tiles(world);
     draw_projectiles(world);
     draw_players(world, t);
-}
-
-fn draw_tiles(world: &World) {
-    let solid = Color::new(0.25, 0.35, 1.0, 1.0);
-    let brick = Color::new(1.0, 0.5, 0.15, 1.0);
-    for ty in 0..MAP_H as i32 {
-        for tx in 0..MAP_W as i32 {
-            let (x, y) = (tx as f32 * TILE, ty as f32 * TILE);
-            match world.map.get(tx, ty) {
-                Tile::Empty => {}
-                Tile::Solid => {
-                    draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, TILE - 4.0, Color::new(0.05, 0.07, 0.25, 1.0));
-                    draw_rectangle_lines(x + 2.0, y + 2.0, TILE - 4.0, TILE - 4.0, 2.0, solid);
-                }
-                Tile::Brick(hp) => {
-                    // More damage = dimmer fill and more cracks.
-                    draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, TILE - 4.0, Color::new(0.35, 0.15, 0.03, 0.2 + 0.1 * hp as f32));
-                    draw_rectangle_lines(x + 2.0, y + 2.0, TILE - 4.0, TILE - 4.0, 2.0, brick);
-                    if hp <= 2 {
-                        draw_line(x + 6.0, y + 8.0, x + 18.0, y + 20.0, 2.0, brick);
-                    }
-                    if hp <= 1 {
-                        draw_line(x + 26.0, y + 6.0, x + 14.0, y + 24.0, 2.0, brick);
-                    }
-                }
-            }
-        }
-    }
 }
 
 fn draw_projectiles(world: &World) {
@@ -75,9 +48,18 @@ fn draw_players(world: &World, t: f32) {
             continue;
         }
         let c = player_color(i);
+        // The arena is grey, so players are the only saturated, filled shapes on
+        // screen: a dark body (so the ring never merges with a wall behind it), a
+        // bright solid core the eye finds in its periphery, and the ring as the
+        // identity accent.
+        draw_circle(p.pos.x, p.pos.y, PLAYER_RADIUS, Color::new(c.r * 0.2, c.g * 0.2, c.b * 0.2, 1.0));
         draw_circle_lines(p.pos.x, p.pos.y, PLAYER_RADIUS, 2.5, c);
-        let tip = p.pos + vec2(p.aim.cos(), p.aim.sin()) * (PLAYER_RADIUS + 9.0);
-        draw_line(p.pos.x, p.pos.y, tip.x, tip.y, 2.5, c);
+        draw_circle(p.pos.x, p.pos.y, PLAYER_RADIUS * 0.6, c);
+        draw_circle(p.pos.x, p.pos.y, PLAYER_RADIUS * 0.25, WHITE);
+        // A filled wedge past the ring says which way you are facing.
+        let dir = vec2(p.aim.cos(), p.aim.sin());
+        let (base, tip, side) = (p.pos + dir * (PLAYER_RADIUS + 2.0), p.pos + dir * (PLAYER_RADIUS + 12.0), vec2(-dir.y, dir.x) * 5.0);
+        draw_triangle(base + side, base - side, tip, c);
 
         let w = 26.0;
         let (x, y) = (p.pos.x - w / 2.0, p.pos.y - PLAYER_RADIUS - 9.0);

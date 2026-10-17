@@ -30,6 +30,14 @@ varying vec4 color;
 uniform sampler2D Texture;
 uniform vec2 texel; // size of one pixel in uv units
 
+// Bright-pass: only the part of a pixel above a threshold may glow. The grey
+// arena sits below it and stays crisp; players, bolts and explosions are
+// above it and bleed light. Neon works through selective brightness: if every
+// tile glows, nothing stands out.
+vec3 bright(vec2 p) {
+    return max(texture2D(Texture, p).rgb - 0.55, 0.0) * 2.2;
+}
+
 void main() {
     vec3 sharp = texture2D(Texture, uv).rgb;
     vec3 glow = vec3(0.0);
@@ -37,8 +45,8 @@ void main() {
     for (int i = 0; i < 8; i++) {
         float a = float(i) * 0.785398; // 45 degrees
         vec2 dir = vec2(cos(a), sin(a));
-        glow += texture2D(Texture, uv + dir * texel * 4.0).rgb;
-        glow += texture2D(Texture, uv + dir * texel * 10.0).rgb * 0.6;
+        glow += bright(uv + dir * texel * 4.0);
+        glow += bright(uv + dir * texel * 10.0) * 0.6;
     }
     glow /= 12.8;
     gl_FragColor = vec4(sharp + glow * 1.6, 1.0);

@@ -22,6 +22,7 @@ mod present;
 mod share;
 mod shaders;
 mod socket;
+mod terrain;
 mod view;
 
 use controls::Controls;
