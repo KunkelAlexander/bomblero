@@ -1,30 +1,52 @@
-// Short-lived visual flourishes: beam flashes, explosion rings, hit pulses.
+// Short-lived visual flourishes: beams, shockwaves, sparks, flying brick shards.
 //
 // This state is purely cosmetic. It is NOT part of the `World`, it is never
 // networked, and the sim does not know it exists. It is built entirely from
 // the sim's `Event`s.
 //
 // Pattern: Event Queue (consumer side). The sim writes events; this module
-// reads them and decides what they look like. M3 adds particles, screen shake
-// and sound as further consumers of the exact same events.
+// reads them and decides what they look like. M3 adds screen shake and sound
+// as further consumers of the exact same events.
+//
+// The game's visual language (draw.rs and terrain.rs follow it too):
+//   * The WORLD is soft, grey and rounded: stone you can read by shape.
+//   * ACTORS are crisp and angular: diamonds, wedges, needles, hexagons.
+//   * COLOUR means "who": everything a player does (bolts, muzzle flash, the
+//     sparks when they are hit, their death burst) is in their colour.
+//   * ORANGE-WHITE means "danger": rockets and explosions, for everybody.
+//   * Light is the only thing that glows, and it falls on the stone: coloured
+//     pools of light under players and projectiles.
 
 use std::collections::HashMap;
 
 use macroquad::prelude::*;
 use sim::{Event, Tile};
 
-use crate::draw::player_color;
+use crate::draw::{light_pool, player_color, DANGER};
 use crate::terrain;
 
 struct Beam {
     from: Vec2,
     to: Vec2,
     age: f32,
+    color: Color,
 }
 
+/// A hexagonal shockwave (the game's "energy" shape), optionally lighting the
+/// floor around it while it expands.
 struct Ring {
     pos: Vec2,
     max_radius: f32,
+    age: f32,
+    life: f32,
+    color: Color,
+    light: f32,
+}
+
+/// A needle-shaped spark.
+struct Spark {
+    pos: Vec2,
+    vel: Vec2,
     age: f32,
     life: f32,
     color: Color,
@@ -44,7 +66,11 @@ struct Shard {
 pub struct Effects {
     beams: Vec<Beam>,
     rings: Vec<Ring>,
+    sparks: Vec<Spark>,
     shards: Vec<Shard>,
+    /// Who fired last. A `Beam` event carries no owner, but it always follows
+    /// the `Shot` that made it, so this is whose colour the beam gets.
+    last_shooter: u8,
     /// Hit points of bricks we have seen damaged. A tile change only says what
     /// the brick is *now*; remembering what it was tells us which wedges just
     /// came off. Bricks nobody has hurt yet are not in here (they have full hp).
@@ -57,20 +83,27 @@ const SHARD_LIFE: f32 = 0.6;
 impl Effects {
     pub fn on_event(&mut self, event: &Event) {
         match *event {
-            Event::Beam { from, to } => self.beams.push(Beam { from, to, age: 0.0 }),
+            Event::Shot { player, pos, .. } => {
+                self.last_shooter = player;
+                self.ring(pos, 12.0, 0.12, player_color(player as usize), 0.0);
+            }
+            Event::Beam { from, to } => {
+                let color = player_color(self.last_shooter as usize);
+                self.beams.push(Beam { from, to, age: 0.0, color });
+            }
             Event::Explosion { pos, radius } => {
-                self.rings.push(Ring { pos, max_radius: radius, age: 0.0, life: 0.4, color: ORANGE })
+                self.ring(pos, radius, 0.4, DANGER, 0.6);
+                self.burst(pos, 14, 120.0..300.0, DANGER);
             }
-            Event::Hit { pos, .. } => {
-                self.rings.push(Ring { pos, max_radius: 20.0, age: 0.0, life: 0.2, color: WHITE })
+            Event::Hit { victim, pos, .. } => {
+                self.ring(pos, 20.0, 0.2, WHITE, 0.0);
+                self.burst(pos, 6, 60.0..160.0, player_color(victim as usize));
             }
-            Event::Died { victim, pos, .. } => self.rings.push(Ring {
-                pos,
-                max_radius: 60.0,
-                age: 0.0,
-                life: 0.6,
-                color: player_color(victim as usize),
-            }),
+            Event::Died { victim, pos, .. } => {
+                let color = player_color(victim as usize);
+                self.ring(pos, 60.0, 0.6, color, 0.5);
+                self.burst(pos, 22, 80.0..260.0, color);
+            }
             Event::TileChanged { x, y, tile } => {
                 let now = match tile {
                     Tile::Brick(hp) => hp,
@@ -99,12 +132,30 @@ impl Effects {
         }
     }
 
+    fn ring(&mut self, pos: Vec2, max_radius: f32, life: f32, color: Color, light: f32) {
+        self.rings.push(Ring { pos, max_radius, age: 0.0, life, color, light });
+    }
+
+    /// `count` sparks flying out in all directions.
+    fn burst(&mut self, pos: Vec2, count: usize, speed: std::ops::Range<f32>, color: Color) {
+        for _ in 0..count {
+            let a = rand::gen_range(0.0, std::f32::consts::TAU);
+            let v = vec2(a.cos(), a.sin()) * rand::gen_range(speed.start, speed.end);
+            self.sparks.push(Spark { pos, vel: v, age: 0.0, life: rand::gen_range(0.25, 0.55), color });
+        }
+    }
+
     pub fn update(&mut self, dt: f32) {
         for b in &mut self.beams {
             b.age += dt;
         }
         for r in &mut self.rings {
             r.age += dt;
+        }
+        for s in &mut self.sparks {
+            s.age += dt;
+            s.pos += s.vel * dt;
+            s.vel *= 1.0 - 3.0 * dt;
         }
         for sh in &mut self.shards {
             sh.age += dt;
@@ -113,6 +164,7 @@ impl Effects {
             sh.angle += sh.spin * dt;
         }
         self.shards.retain(|sh| sh.age < SHARD_LIFE);
+        self.sparks.retain(|s| s.age < s.life);
         self.beams.retain(|b| b.age < BEAM_LIFE);
         self.rings.retain(|r| r.age < r.life);
     }
@@ -130,14 +182,26 @@ impl Effects {
         }
         for b in &self.beams {
             let fade = 1.0 - b.age / BEAM_LIFE;
-            draw_line(b.from.x, b.from.y, b.to.x, b.to.y, 1.0 + 5.0 * fade, Color::new(0.6, 0.9, 1.0, fade));
+            let c = Color::new(b.color.r, b.color.g, b.color.b, fade);
+            draw_line(b.from.x, b.from.y, b.to.x, b.to.y, 1.0 + 5.0 * fade, c);
             draw_line(b.from.x, b.from.y, b.to.x, b.to.y, 1.5, Color::new(1.0, 1.0, 1.0, fade));
         }
         for r in &self.rings {
             let k = r.age / r.life;
-            let c = Color::new(r.color.r, r.color.g, r.color.b, 1.0 - k);
             // Ease-out so the ring snaps outward and then slows.
-            draw_circle_lines(r.pos.x, r.pos.y, r.max_radius * (1.0 - (1.0 - k) * (1.0 - k)), 3.0, c);
+            let radius = r.max_radius * (1.0 - (1.0 - k) * (1.0 - k));
+            if r.light > 0.0 {
+                light_pool(r.pos, r.max_radius * 1.6, r.color, r.light * (1.0 - k));
+            }
+            draw_poly_lines(r.pos.x, r.pos.y, 6, radius, 0.0, 3.0, Color::new(r.color.r, r.color.g, r.color.b, 1.0 - k));
+        }
+        for s in &self.sparks {
+            let k = s.age / s.life;
+            let dir = s.vel.normalize_or_zero();
+            let side = vec2(-dir.y, dir.x) * 1.4;
+            let c = Color::new(s.color.r, s.color.g, s.color.b, 1.0 - k);
+            draw_triangle(s.pos + dir * 6.0, s.pos + side, s.pos - side, c);
+            draw_triangle(s.pos - dir * 3.0, s.pos + side, s.pos - side, c);
         }
     }
 }

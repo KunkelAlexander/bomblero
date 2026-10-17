@@ -13,7 +13,7 @@ reading it should explain how a real-time multiplayer game is put together.
 
 ![The menu](docs/img/menu.png)
 
-![A match against three bots: bricks (orange) can be shot away, walls (blue) cannot](docs/img/match.png)
+![A match against three bots: light pebbles can be shot away, the dark rounded walls cannot. Colour says who, orange says danger.](docs/img/match.png)
 
 ![Hosting an online game: the room code is shown top left](docs/img/host.png)
 
@@ -21,15 +21,19 @@ reading it should explain how a real-time multiplayer game is put together.
 
 Early but playable. Done so far:
 
-* Free movement (WASD) with mouse aim, in a destructible tile arena: bricks
-  break, walls don't.
+* Free movement (WASD) with mouse aim, in a destructible tile arena: the light
+  grey pebbles break (one facet per hit), the dark rounded walls don't. The map
+  mixes L, T and Z walls, brick patches and an open middle.
 * Three weapons as rows of a data table: **Neon Blaster** (fast bolts),
   **Rocket** (explosion that digs a crater) and **Railgun** (piercing beam).
   Each has a magazine and reloads automatically.
 * Simple bots, 100 HP, respawning, first to 15 kills.
 * Online play with room codes: one player hosts, friends join from their own
   browsers. Joiners see the match smoothed by interpolation, with a ping readout.
-* A glow shader for the neon look.
+* A look of its own: a soft grey stone world, crisp coloured actors, colour for
+  *who* and orange for *danger*, and pools of coloured light on the floor. Only
+  the brightest things glow. A quiet HUD strip under the map shows your weapons
+  and ammo, the scoreboard (your colour marks you) and the room status.
 
 Planned (see [PLAN.md](PLAN.md)): synthesized sound and more effects, then a
 grapple hook, block building, 15 weapons, a loadout screen, three maps and a

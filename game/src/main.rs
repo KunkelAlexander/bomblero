@@ -14,6 +14,7 @@
 mod controls;
 mod draw;
 mod effects;
+mod hud;
 mod join;
 mod local;
 mod menu;

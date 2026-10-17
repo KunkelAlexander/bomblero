@@ -188,21 +188,21 @@ mod tests {
     fn tile_changes_reach_the_replica() {
         let mut host = Host::new(4, 7);
         let mut replica = join_as_client(&mut host);
-        // Tile (5,5) is a brick in the Grid map. Announce its destruction
+        // Tile (2,5) is a brick in the Grid map. Announce its destruction
         // without touching the host's own map, so that only the *event* can be
         // what changes the replica.
-        assert_eq!(replica.world.map.get(5, 5), sim::Tile::Brick(3));
+        assert_eq!(replica.world.map.get(2, 5), sim::Tile::Brick(3));
         let mut snapshot = host.tick();
-        snapshot.events.push(Event::TileChanged { x: 5, y: 5, tile: sim::Tile::Empty });
+        snapshot.events.push(Event::TileChanged { x: 2, y: 5, tile: sim::Tile::Empty });
         replica.apply(over_the_wire(&HostMsg::Snapshot(snapshot)));
         replica.advance(0.0);
-        assert_eq!(replica.world.map.get(5, 5), sim::Tile::Empty);
+        assert_eq!(replica.world.map.get(2, 5), sim::Tile::Empty);
     }
 
     #[test]
     fn a_late_joiner_gets_the_current_map() {
         let mut host = Host::new(4, 7);
-        host.world.map.set(5, 5, sim::Tile::Empty);
+        host.world.map.set(2, 5, sim::Tile::Empty);
         let replica = join_as_client(&mut host);
         assert_eq!(replica.world.map.tiles(), host.world().map.tiles());
     }

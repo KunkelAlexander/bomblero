@@ -7,6 +7,7 @@ use protocol::replica::Replica;
 
 use crate::draw;
 use crate::effects::Effects;
+use crate::hud;
 use crate::net::RateMeter;
 use crate::terrain::Terrain;
 use crate::view::Glow;
@@ -40,9 +41,7 @@ impl Presenter {
         self.terrain.draw(&replica.world.map);
         draw::draw_world(&replica.world, get_time() as f32);
         self.effects.draw();
-        draw::draw_hud(&replica.world, replica.me as usize, can_restart);
-        draw::draw_net_stats(self.down_rate.per_second, self.up_rate.per_second);
-        draw_text(banner, 16.0, 26.0, 24.0, Color::new(0.1, 1.0, 0.95, 1.0));
+        hud::draw(&replica.world, replica.me as usize, can_restart, banner, self.down_rate.per_second, self.up_rate.per_second);
         glow.present();
     }
 }

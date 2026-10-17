@@ -10,10 +10,15 @@ use crate::shaders;
 // for fairness in a shooter and keeps the later netcode free of screen-size
 // concerns.
 pub const WIDTH: f32 = 1280.0;
-pub const HEIGHT: f32 = 720.0;
+pub const HEIGHT: f32 = 768.0;
 
-/// The map is 1280x704 px, so it sits 8 px below the top to be centred.
+/// The map is 1280x704 px and sits 8 px below the top. The 56 px left under it
+/// are the HUD's own strip, so the HUD never covers the playfield.
 pub const ORIGIN: Vec2 = vec2(0.0, 8.0);
+
+/// Where the HUD strip starts, in world coordinates (the map ends at 704).
+/// Below this line the glow shader is switched off, so text stays crisp.
+pub const HUD_TOP: f32 = 706.0;
 
 /// Letterbox: scale uniformly to fit the window and centre, so a window that is
 /// not 16:9 gets black bars instead of a stretched picture.
@@ -45,12 +50,18 @@ impl Glow {
         let material = load_material(
             ShaderSource::Glsl { vertex: shaders::VERTEX, fragment: shaders::GLOW_FRAGMENT },
             MaterialParams {
-                uniforms: vec![UniformDesc::new("texel", UniformType::Float2)],
+                uniforms: vec![
+                    UniformDesc::new("texel", UniformType::Float2),
+                    UniformDesc::new("hud_edge", UniformType::Float1),
+                ],
                 ..Default::default()
             },
         )
         .expect("glow shader failed to compile");
         material.set_uniform("texel", vec2(1.0 / WIDTH, 1.0 / HEIGHT));
+        // As a fraction of the picture height measured from the bottom, which
+        // is how the shader sees `uv.y` (render targets are stored upside down).
+        material.set_uniform("hud_edge", (HEIGHT - (ORIGIN.y + HUD_TOP)) / HEIGHT);
         Glow { scene, material }
     }
 

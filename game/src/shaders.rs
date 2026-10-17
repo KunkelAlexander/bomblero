@@ -29,6 +29,7 @@ varying vec2 uv;
 varying vec4 color;
 uniform sampler2D Texture;
 uniform vec2 texel; // size of one pixel in uv units
+uniform float hud_edge; // uv.y below this is the HUD strip: no glow there
 
 // Bright-pass: only the part of a pixel above a threshold may glow. The grey
 // arena sits below it and stays crisp; players, bolts and explosions are
@@ -49,6 +50,8 @@ void main() {
         glow += bright(uv + dir * texel * 10.0) * 0.6;
     }
     glow /= 12.8;
-    gl_FragColor = vec4(sharp + glow * 1.6, 1.0);
+    // Glow makes small text fuzzy, so the HUD strip is drawn sharp.
+    float in_world = step(hud_edge, uv.y);
+    gl_FragColor = vec4(sharp + glow * 1.6 * in_world, 1.0);
 }
 ";

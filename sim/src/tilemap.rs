@@ -157,30 +157,33 @@ pub fn tile_center(tx: i32, ty: i32) -> Vec2 {
     vec2((tx as f32 + 0.5) * TILE, (ty as f32 + 0.5) * TILE)
 }
 
-/// Map 1: "Grid". Bomberman-style pillars with bricks in between, mirrored
-/// left-right and top-bottom so no spawn is luckier than another.
+/// Map 1: "Grid". Walls come in different shapes (L, T, Z and long bars with
+/// hooks), bricks sit in patches around them, and the middle is an open plaza
+/// with a long lane through it, so rockets, rails and bolts each have somewhere
+/// they shine. Mirrored left-right and top-bottom so no spawn is luckier than
+/// another; every spawn can reach every other without breaking a brick.
 pub const MAP_GRID: &str = "\
 ########################################
-#S..bb.b.bb.bbbbb.bbbb.bbbbb.bb.b.bb..S#
-#.#.#.#.#.#b#.#b#.#bb#.#b#.#b#.#.#.#.#.#
-#...bbb.b..b.bbb.bb..bb.bbb.b..b.bbb...#
-#b#b#.#.#b#.#.#.#.#bb#.#.#.#.#b#.#.#b#b#
-#.bb.bbb....b...b..bb..b...b....bbb.bb.#
-#.#b#.#.#.#.#b#b#.#bb#.#b#b#.#.#.#.#b#.#
-#bbbb.bbb.bb....bbb..bbb....bb.bbb.bbbb#
-#.#b#b#b#b#b#.#b#b#bb#b#b#.#b#b#b#b#b#.#
-#b......b....bbb.bbbbbb.bbb....b......b#
-#b#b#b#b#b#b#b#b#.#S.#.#b#b#b#b#b#b#b#b#
-#b#b#b#b#b#b#b#b#.#.S#.#b#b#b#b#b#b#b#b#
-#b......b....bbb.bbbbbb.bbb....b......b#
-#.#b#b#b#b#b#.#b#b#bb#b#b#.#b#b#b#b#b#.#
-#bbbb.bbb.bb....bbb..bbb....bb.bbb.bbbb#
-#.#b#.#.#.#.#b#b#.#bb#.#b#b#.#.#.#.#b#.#
-#.bb.bbb....b...b..bb..b...b....bbb.bb.#
-#b#b#.#.#b#.#.#.#.#bb#.#.#.#.#b#.#.#b#b#
-#...bbb.b..b.bbb.bb..bb.bbb.b..b.bbb...#
-#.#.#.#.#.#b#.#b#.#bb#.#b#.#b#.#.#.#.#.#
-#S..bb.b.bb.bbbbb.bbbb.bbbbb.bb.b.bb..S#
+#S..bb...#b..bb..........bb..b#...bb..S#
+#.##.....#bb......bbbb......bb#.....##.#
+#.#...........###.b..b.###...........#.#
+#......######..#...bb...#..######......#
+#.b....b....#...bb####bb...#....b....b.#
+#.b..#.bb...#bb..#....#..bb#...bb.#..b.#
+#..b.#...##.b.b.##....##.b.b.##...#.b..#
+#..bb#..bb##................##bb..#bb..#
+#....##..b....................b..##....#
+#.bb....#..bb......S.......bb..#....bb.#
+#.bb....#..bb.......S......bb..#....bb.#
+#....##..b....................b..##....#
+#..bb#..bb##................##bb..#bb..#
+#..b.#...##.b.b.##....##.b.b.##...#.b..#
+#.b..#.bb...#bb..#....#..bb#...bb.#..b.#
+#.b....b....#...bb####bb...#....b....b.#
+#......######..#...bb...#..######......#
+#.#...........###.b..b.###...........#.#
+#.##.....#bb......bbbb......bb#.....##.#
+#S..bb...#b..bb..........bb..b#...bb..S#
 ########################################";
 
 #[cfg(test)]
