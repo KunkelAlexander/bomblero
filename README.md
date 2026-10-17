@@ -1,33 +1,104 @@
 # Neon Bomber-Liero
 
 A fast top-down arena shooter ("Bomberman meets Liero") in a neon style, written
-in Rust with macroquad. It runs in the browser (WASM) and natively. It uses no
-external assets: graphics are procedural shapes and sounds are synthesized in
-code.
+in Rust with [macroquad](https://macroquad.rs). It runs in the browser (WASM)
+and natively, and you can play it online with friends through a room code.
 
-It is also a learning project: the code is commented to teach how online
-multiplayer and game-programming patterns work.
+It uses **no external assets**: graphics are procedural shapes plus a glow
+shader, and sounds will be synthesized in code.
 
-## Run it
+It is also a learning project. The code is commented to teach how online
+multiplayer works and where patterns from *Game Programming Patterns* fit, so
+reading it should explain how a real-time multiplayer game is put together.
+
+![The menu](docs/img/menu.png)
+
+![A match against three bots: bricks (orange) can be shot away, walls (blue) cannot](docs/img/match.png)
+
+![Hosting an online game: the room code is shown top left](docs/img/host.png)
+
+## Status
+
+Early but playable. Done so far:
+
+* Free movement (WASD) with mouse aim, in a destructible tile arena: bricks
+  break, walls don't.
+* Three weapons as rows of a data table: **Neon Blaster** (fast bolts),
+  **Rocket** (explosion that digs a crater) and **Railgun** (piercing beam).
+  Each has a magazine and reloads automatically.
+* Simple bots, 100 HP, respawning, first to 15 kills.
+* Online play with room codes: one player hosts, friends join from their own
+  browsers. Joiners see the match smoothed by interpolation, with a ping readout.
+* A glow shader for the neon look.
+
+Planned (see [PLAN.md](PLAN.md)): synthesized sound and more effects, then a
+grapple hook, block building, 15 weapons, a loadout screen, three maps and a
+match flow. Not built yet.
+
+## Play it
+
+**In the browser:** open the GitHub Pages site for this repository. One player
+presses **H** and tells the others the 4-letter room code; the others press
+**J** and type it. The first load can take about a minute while the free relay
+server wakes up. Keep the hosting tab visible, because browsers freeze
+background tabs and the match runs inside the host's tab.
+
+**Natively** (needs [Rust](https://rustup.rs)):
 
 ```
-cargo run -p game --release          # native
-cargo run -p server --release        # relay for online play (port 9001)
+cargo run -p game --release          # the game
+cargo run -p server --release        # the relay, only for online play (port 9001)
 cargo test                           # headless tests, no window needed
 ```
 
-Browser build: see [docs/DEPLOY.md](docs/DEPLOY.md). Menu keys: **P** practice
-against bots, **H** host a room, **J** join one by its 4-letter code.
-Controls: WASD move, mouse aim, left button fire, 1-5 or Q/E switch weapon.
+Menu: **P** play offline against bots, **H** host an online game, **J** join
+one.
 
-## Where to read next
+| Key | Action |
+|---|---|
+| W A S D | move |
+| mouse | aim |
+| left button | fire |
+| 1 2 3, Q / E, mouse wheel | choose weapon |
+| R | restart the match (offline or when hosting) |
+| I | (joiner) turn interpolation on or off, to see what it does |
+| Esc | back to the menu |
+
+## How it is built
+
+```
+sim/        the rules: tilemap, players, weapons, projectiles, bots. A headless
+            crate with no window, sound or network; it is only fed inputs.
+protocol/   the messages (Input, Snapshot, Event, ...) and the client's Replica
+host/       the Host: collects inputs by player, steps the sim, builds snapshots
+server/     the relay: rooms by code, forwards opaque bytes, knows no rules
+game/       the macroquad client: drawing, input, menu, hosting and joining
+docs/       NETWORKING.md and DEPLOY.md
+```
+
+The central idea is **inputs in, state out**. Keyboard, bots and network players
+all produce the same small `Input` struct, and only the host ever calls
+`World::step`. Everyone else draws a copy of the world built from snapshots.
+Because of that, offline play, hosting, joining, bots and the unit tests all run
+the same code path, and the sim never depends on rendering, sound or sockets.
+
+**"Host is a role, not a place."** Today the host is one player's browser.
+Because the `Host` struct touches no window or socket, it could move into a
+dedicated server later without changing the clients (see below).
+
+Patterns from *Game Programming Patterns* are named in comments where they are
+used: Game Loop (fixed 60 Hz step), Command (`Input`), Type Object (`WeaponDef`),
+Flyweight, Event Queue, Double Buffer and Dirty Flag (snapshots and tile
+changes), Spatial Partition (the tile grid) and State.
+
+Read more:
 
 | | |
 |---|---|
-| [PLAN.md](PLAN.md) | decisions, weapon list, milestones |
 | [docs/NETWORKING.md](docs/NETWORKING.md) | how a key press travels to a friend's screen |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | putting the game and the relay online |
-| [CLAUDE.md](CLAUDE.md) | the coding rules and architecture rules |
+| [PLAN.md](PLAN.md) | decisions, weapon list, milestones |
+| [CLAUDE.md](CLAUDE.md) | the coding and architecture rules this code follows |
 
 ## Why does online play need a server at all?
 
@@ -87,7 +158,7 @@ open.
 * The relay becomes a game server: it must decode messages, run the tick loop
   and own the player slots (the code in `game/src/share.rs` and `host/`).
 * The hosting player loses their zero-lag advantage, which is fairer but makes
-  client-side prediction (M5) worth considering.
+  client-side prediction worth considering.
 
 **How much work.** Less than it sounds, because `Host` already takes decoded
 messages and returns snapshots without touching a socket. The work is moving
@@ -97,8 +168,21 @@ they are.
 
 **Serving the web files too.** The server could also return `index.html` and the
 `.wasm`, giving one deployment and no `RELAY_URL` build setting. But on a
-sleeping free tier even loading the page would wait a minute, so keep the
-static files on GitHub Pages, which is free and always awake.
+sleeping free tier even loading the page would wait a minute, so the static
+files stay on GitHub Pages, which is free and always awake.
 
-**Plan:** deploy the current version first and play it with a friend. If the
-host-tab freeze or the host's lag bothers you, do the move then.
+**Plan:** play the current version with friends first. If the host-tab freeze or
+the host's lag bothers you, do the move then.
+
+## Known limits
+
+* The host's browser tab must stay visible, or the match freezes for everyone.
+* Joiners see everything about 100 ms late (interpolation), including their own
+  player. There is no client-side prediction yet.
+* The native build can only use a relay on `ws://` (no TLS), so a deployed relay
+  works with the browser build only.
+* The free relay sleeps when idle, and rooms disappear if it restarts.
+
+## License
+
+[MIT](LICENSE).
