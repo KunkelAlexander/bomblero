@@ -86,7 +86,7 @@ fn draw_players(world: &World, t: f32) {
     }
 }
 
-pub fn draw_hud(world: &World, me: usize) {
+pub fn draw_hud(world: &World, me: usize, can_restart: bool) {
     // Scoreboard along the top.
     let mut x = 520.0;
     for (i, p) in world.players.iter().enumerate() {
@@ -121,7 +121,9 @@ pub fn draw_hud(world: &World, me: usize) {
     }
     if let Some(w) = world.winner {
         center_text(&format!("PLAYER {} WINS", w + 1), 300.0, 70.0, player_color(w as usize));
-        center_text("press R for a new match", 350.0, 28.0, GRAY);
+        // Only the host owns the match, so only the host can start a new one.
+        let hint = if can_restart { "press R for a new match" } else { "waiting for the host to start a new match" };
+        center_text(hint, 350.0, 28.0, GRAY);
     }
 }
 

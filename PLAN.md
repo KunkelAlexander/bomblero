@@ -136,3 +136,9 @@ server/Dockerfile, render.yaml, fly.toml
 - quad-net rejected (panics on failed connect, no close detection). Own wrapper: `game/src/socket.rs` (tungstenite thread natively, browser WebSocket via `web/net.js`).
 - Game now has a menu (P offline, H host, J join by code) and a lobby screen that shows the room code, friends count and joiner->relay->host->relay->joiner round-trip time. Relay URL: `RELAY_URL` env at build time, default `ws://127.0.0.1:9001/ws`.
 - Native client has no TLS (browsers handle wss themselves); a native build can only talk to a `ws://` relay.
+
+## Addendum (M2 step 3)
+- Hosting is "offline play plus a room": `LocalGame` gets an optional `Share` (`game/src/share.rs`, the host session: relay peer -> player slot table, Welcome to arrivals, `Host::handle` for their inputs, Pong for pings, snapshots broadcast with `Data { to: None }`). The host plays immediately and friends drop in mid-match, so there is no separate lobby for the host. R = rematch (friends get a fresh Welcome).
+- Joining is `game/src/join.rs` (pure client: Replica + inputs at most once per tick + ping). The old lobby screen was removed. `present.rs` draws a Replica for both paths.
+- New `HostMsg::Full` so a joiner is told when all 4 slots are taken.
+- Known limit: a hosting browser tab that is hidden is paused by the browser, so friends see the match freeze (a joiner measured a 35 s ping). The host must keep the tab visible, or the host role moves to a dedicated server.

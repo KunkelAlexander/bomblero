@@ -49,6 +49,9 @@ pub enum HostMsg {
     Welcome(Welcome),
     Snapshot(Snapshot),
     Pong { token: u32 },
+    /// Answer to a join when every slot is taken (there is no `Welcome`).
+    /// Without it the newcomer would wait forever.
+    Full,
 }
 
 /// Sent once to a new arrival: everything needed to start from scratch.

@@ -38,7 +38,7 @@ impl Replica {
             HostMsg::Welcome(w) => *self = Replica::new(w),
             HostMsg::Snapshot(s) => self.apply_snapshot(s),
             // About the connection, not the match: the session reads it.
-            HostMsg::Pong { .. } => {}
+            HostMsg::Pong { .. } | HostMsg::Full => {}
         }
     }
 

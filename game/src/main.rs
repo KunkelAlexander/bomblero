@@ -6,28 +6,30 @@
 //   draw / effects <── Replica (the client's copy) <──[wire]── Snapshot
 //
 // Everything left of the host produces Commands; everything right of it only
-// reads. For an offline game the host runs in this same process (see
-// local.rs); online, the wire leads to another machine and nothing on this
-// side changes.
+// reads. The host runs either in this very process (offline, or hosting for
+// friends: local.rs + share.rs) or on a friend's machine (join.rs); the
+// wire is a loopback in the first case and the relay in the second, and
+// nothing else changes.
 
 mod controls;
 mod draw;
 mod effects;
-mod lobby;
+mod join;
 mod local;
 mod menu;
 mod net;
+mod present;
+mod share;
 mod shaders;
 mod socket;
 mod view;
 
 use controls::Controls;
-use effects::Effects;
-use lobby::Lobby;
+use join::JoinGame;
 use local::LocalGame;
 use macroquad::prelude::*;
 use menu::{Choice, Menu};
-use net::RateMeter;
+use present::Presenter;
 use sim::DT;
 
 fn window_conf() -> Conf {
@@ -46,33 +48,33 @@ fn window_conf() -> Conf {
 /// else, and the main loop just asks the current one to run a frame.
 enum Screen {
     Menu(Menu),
-    Lobby(Lobby),
-    Offline(Offline),
+    /// A match whose host runs in this process: offline, or with a room open.
+    Hosting(HostGame),
+    /// A match hosted by a friend.
+    Joined(JoinGame),
 }
 
-/// An offline match plus the per-frame bookkeeping around it.
-struct Offline {
+/// A hosted match plus the per-frame bookkeeping around it.
+struct HostGame {
     game: LocalGame,
-    effects: Effects,
+    presenter: Presenter,
     /// Real time not yet spent on sim ticks (see the Game Loop note below).
     bucket: f32,
-    up_rate: RateMeter,
-    down_rate: RateMeter,
 }
 
-impl Offline {
-    fn new() -> Offline {
-        Offline {
-            game: LocalGame::new((macroquad::miniquad::date::now() * 1000.0) as u32),
-            effects: Effects::default(),
-            bucket: 0.0,
-            up_rate: RateMeter::default(),
-            down_rate: RateMeter::default(),
+impl HostGame {
+    fn new(open_room: bool) -> HostGame {
+        let mut game = LocalGame::new(new_seed());
+        if open_room {
+            game.open_room();
         }
+        HostGame { game, presenter: Presenter::default(), bucket: 0.0 }
     }
 
     fn frame(&mut self, controls: &mut Controls, glow: &view::Glow) {
-        let frame = get_frame_time();
+        if is_key_pressed(KeyCode::R) {
+            self.game.restart(new_seed());
+        }
 
         // Pattern: Game Loop. macroquad owns the outer loop (`next_frame().await`).
         // Inside it we run the sim on a fixed 1/60 s step using an accumulator:
@@ -82,8 +84,11 @@ impl Offline {
         // happens once per frame regardless, at whatever rate the monitor runs.
         //
         // Cap the catch-up: after a long stall (e.g. a background tab) we skip
-        // time instead of freezing while we simulate seconds of ticks.
-        self.bucket += frame.min(0.1);
+        // time instead of freezing while we simulate seconds of ticks. Note
+        // what that means for a hosting tab that is in the background: the
+        // match runs in slow motion for everybody, because the host's clock
+        // is the match's clock.
+        self.bucket += get_frame_time().min(0.1);
 
         // Client side: read the devices and send the wishes to the host.
         let me = self.game.replica.me as usize;
@@ -97,20 +102,14 @@ impl Offline {
 
         // Client side again: take in what the host said, then show it.
         self.game.receive();
-        for event in self.game.replica.drain_events() {
-            self.effects.on_event(&event);
-        }
-        self.effects.update(frame);
-        self.up_rate.update(get_time(), self.game.bytes_up());
-        self.down_rate.update(get_time(), self.game.bytes_down());
-
-        glow.begin();
-        draw::draw_world(&self.game.replica.world, get_time() as f32);
-        self.effects.draw();
-        draw::draw_hud(&self.game.replica.world, me);
-        draw::draw_net_stats(self.down_rate.per_second, self.up_rate.per_second);
-        glow.present();
+        let banner = self.game.room_status().unwrap_or_default();
+        let (up, down) = (self.game.bytes_up(), self.game.bytes_down());
+        self.presenter.show(&mut self.game.replica, up, down, &banner, true, glow);
     }
+}
+
+fn new_seed() -> u32 {
+    (macroquad::miniquad::date::now() * 1000.0) as u32
 }
 
 #[macroquad::main(window_conf)]
@@ -121,7 +120,7 @@ async fn main() {
 
     loop {
         // Esc leaves any screen for the menu (the menu itself uses Esc to
-        // back out of typing a code). Dropping a `Lobby` closes its socket.
+        // back out of typing a code). Dropping a screen closes its socket.
         if is_key_pressed(KeyCode::Escape) && !matches!(screen, Screen::Menu(_)) {
             screen = Screen::Menu(Menu::new());
         }
@@ -132,26 +131,16 @@ async fn main() {
         match &mut screen {
             Screen::Menu(menu) => {
                 next = menu.update().map(|choice| match choice {
-                    Choice::Offline => Screen::Offline(Offline::new()),
-                    Choice::Host => Screen::Lobby(Lobby::host()),
-                    Choice::Join(code) => Screen::Lobby(Lobby::join(code)),
+                    Choice::Offline => Screen::Hosting(HostGame::new(false)),
+                    Choice::Host => Screen::Hosting(HostGame::new(true)),
+                    Choice::Join(code) => Screen::Joined(JoinGame::new(code)),
                 });
                 glow.begin();
                 menu.draw();
                 glow.present();
             }
-            Screen::Lobby(lobby) => {
-                lobby.update(get_time());
-                glow.begin();
-                lobby.draw();
-                glow.present();
-            }
-            Screen::Offline(offline) => {
-                if is_key_pressed(KeyCode::R) {
-                    *offline = Offline::new();
-                }
-                offline.frame(&mut controls, &glow);
-            }
+            Screen::Hosting(host_game) => host_game.frame(&mut controls, &glow),
+            Screen::Joined(join_game) => join_game.frame(&mut controls, &glow),
         }
         if let Some(next) = next {
             screen = next;
