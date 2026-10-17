@@ -22,6 +22,11 @@ shooting range in the middle is for trying the weapons first.*
 | ![Standing on a pad: the ring closes edge by edge in your colour.](docs/img/pad.png) | ![Joining: type the four-character room code.](docs/img/join.png) |
 | *Standing on a pad: the ring closes edge by edge in your colour.* | *JOIN asks for the room code.* |
 
+![The weapon picker: ten weapons on cards, five of them numbered in the order picked.](docs/img/armory.png)
+
+*Before every match you choose five of the ten weapons, like Liero's weapon
+menu. The order you pick is the order of keys 1-5.*
+
 ![A match against three bots: the pebbles can be shot away, the polished black walls cannot. Colour says who, orange says danger.](docs/img/match.png)
 
 *A match against three bots. The pebbles break (one facet per hit); the black
@@ -48,11 +53,17 @@ Early but playable. Done so far:
 * Free movement (WASD) with mouse aim, in a destructible tile arena: the
   slate pebbles break (one facet per hit), the polished black walls don't. The map
   mixes L, T and Z walls, brick patches and an open middle.
-* Six weapons as rows of a data table: **Neon Blaster** (fast bolts),
+* Ten weapons as rows of a data table: **Neon Blaster** (fast bolts),
   **Scatter** (shotgun), **Rocket** (explosion that digs a crater), **Bouncer**
   (ricochets off walls), **Bomb** (dropped at your feet, plus-shaped blast that
-  walls cut short) and **Railgun** (piercing beam). Each has a magazine and
-  reloads automatically.
+  walls cut short), **Railgun** (piercing beam), **Cluster** (a shell that
+  bursts into bomblets), **Swarm** (six homing missiles), **Teleport** (jump
+  to where it lands, or swap places with whoever it hits) and **Nova** (one
+  huge blast that clears a room). Each has a magazine and reloads
+  automatically.
+* A loadout like Liero's: before each match you pick five of the ten. The host
+  checks every choice (five different weapons, accepted once) before it
+  touches the match.
 * Simple bots, 100 HP, respawning, first to 15 kills.
 * Online play with room codes: one player hosts, friends join from their own
   browsers. Joiners see the match smoothed by interpolation, with a ping readout.
@@ -67,8 +78,8 @@ Early but playable. Done so far:
   play offline, host or join, and try the weapons on the shooting range first.
 
 Planned (see [PLAN.md](PLAN.md)): synthesized sound and more effects, then a
-grapple hook, block building, nine more weapons, a loadout screen, three maps and a
-match flow. Not built yet.
+grapple hook, block building, five more weapons (black hole, digger, chain
+lightning, laser sweep, time bubble), three maps and a match flow. Not built yet.
 
 ## Play it
 
@@ -94,7 +105,7 @@ Menu: walk onto the **PLAY**, **HOST** or **JOIN** hexagon and stay a moment
 | W A S D | move |
 | mouse | aim |
 | left button | fire |
-| 1-6, Q / E, mouse wheel | choose weapon |
+| 1-5, Q / E, mouse wheel | choose weapon (1-0 on the menu's shooting range) |
 | R | restart the match (offline or when hosting) |
 | I | (joiner) turn interpolation on or off, to see what it does |
 | Esc | back to the menu |

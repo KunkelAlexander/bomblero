@@ -17,6 +17,7 @@ use host::Host;
 use protocol::replica::Replica;
 use protocol::{ClientMsg, HostMsg, PlayerId};
 use sim::tilemap::MAP_HUB;
+use sim::weapons::ARSENAL;
 use sim::Input;
 
 use crate::net::Loopback;
@@ -34,16 +35,25 @@ pub struct LocalGame {
     share: Option<Share>,
     /// The client's copy of the world. This is what gets drawn.
     pub replica: Replica,
+    /// The weapons this player picked. A rematch is a brand-new `Host`, which
+    /// has to be told again, exactly like a friend who rejoins.
+    loadout: Vec<u8>,
 }
 
 impl LocalGame {
-    pub fn new(seed: u32) -> LocalGame {
-        LocalGame::with_host(Host::new(PLAYER_COUNT, seed))
+    pub fn new(seed: u32, loadout: &[u8]) -> LocalGame {
+        let mut game = LocalGame::with_host(Host::new(PLAYER_COUNT, seed));
+        // Even the local player's choice goes through the wire as a message,
+        // like a friend's: one code path, and the host checks it either way.
+        game.loadout = loadout.to_vec();
+        game.link.client_send(&ClientMsg::Loadout(game.loadout.clone()));
+        game
     }
 
-    /// The menu hub: one player alone on a small map (see `MAP_HUB`).
+    /// The menu hub: one player alone on a small map (see `MAP_HUB`), with every
+    /// weapon so the shooting range can try them all.
     pub fn menu(seed: u32) -> LocalGame {
-        LocalGame::with_host(Host::on_map(MAP_HUB, 1, seed))
+        LocalGame::with_host(Host::on_map(MAP_HUB, 1, seed, &ARSENAL))
     }
 
     fn with_host(mut host: Host) -> LocalGame {
@@ -62,7 +72,7 @@ impl LocalGame {
             _ => unreachable!("the loopback delivers the Welcome we just sent"),
         };
 
-        LocalGame { host, link, peer, share: None, replica }
+        LocalGame { host, link, peer, share: None, replica, loadout: Vec::new() }
     }
 
     /// Let friends in: open a room on the relay. Idempotent.
@@ -75,7 +85,8 @@ impl LocalGame {
     /// Rematch. Friends stay in the room and get a fresh `Welcome`.
     pub fn restart(&mut self, seed: u32) {
         let share = self.share.take();
-        *self = LocalGame::new(seed);
+        let loadout = std::mem::take(&mut self.loadout);
+        *self = LocalGame::new(seed, &loadout);
         if let Some(mut share) = share {
             share.welcome_again(&mut self.host);
             self.share = Some(share);

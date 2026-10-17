@@ -96,7 +96,16 @@ impl Effects {
             }
             Event::Explosion { pos, radius } => {
                 self.ring(pos, radius, 0.4, DANGER, 0.6);
-                self.burst(pos, 14, 120.0..300.0, DANGER);
+                // More sparks for a bigger blast: 14 for a rocket, 46 for a Nova.
+                self.burst(pos, (radius * 0.2) as usize, 120.0..300.0, DANGER);
+            }
+            Event::Teleported { player, from, to } => {
+                // A ring and a puff of sparks at both ends, in the jumper's colour.
+                let color = player_color(player as usize);
+                for at in [from, to] {
+                    self.ring(at, 36.0, 0.35, color, 0.5);
+                    self.burst(at, 10, 60.0..180.0, color);
+                }
             }
             Event::Cross { pos, arms } => {
                 // The plus is four fat beams, one per arm, so it is exactly as

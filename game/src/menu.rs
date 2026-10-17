@@ -160,7 +160,7 @@ impl Menu {
         hub.presenter.floor(&mut hub.game.replica, &lights, glow);
         // Signs painted on the floor, under the player and their shots.
         draw_title();
-        center_text("WASD move    mouse aim    click fire    1-6 weapons", 336.0, 26.0, TEXT_DIM);
+        center_text("WASD move    mouse aim    click fire    1-0 weapons", 336.0, 26.0, TEXT_DIM);
         center_text("walk onto a hexagon and stay to choose", 366.0, 26.0, TEXT_DIM);
         for (i, pad) in PADS.iter().enumerate() {
             let progress = if self.on == Some(i) { self.dwell / DWELL } else { 0.0 };

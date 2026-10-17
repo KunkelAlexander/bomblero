@@ -58,8 +58,11 @@ pub fn from_world(world: &World, out: &mut Vec<Light>) {
         let (radius, color, strength) = match p.weapon {
             sim::weapons::ROCKET => (130.0, DANGER, 0.8),
             sim::weapons::BOMB => (70.0, DANGER, 0.5),
-            // Eight pellets per shot would be eight lights: not worth it.
-            sim::weapons::SCATTER => continue,
+            sim::weapons::NOVA => (240.0, DANGER, 1.0),
+            sim::weapons::CLUSTER => (80.0, DANGER, 0.6),
+            // Eight pellets per shot would be eight lights: not worth it. The
+            // same goes for the swarm's six missiles and the cluster's seven bomblets.
+            sim::weapons::SCATTER | sim::weapons::SWARM | sim::weapons::BOMBLET => continue,
             _ => (85.0, player_color(p.owner as usize), 0.75),
         };
         out.push(Light { pos: p.pos, radius, color, strength });

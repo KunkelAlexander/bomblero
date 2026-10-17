@@ -3,7 +3,8 @@
 // numbers differ; the few genuinely new mechanics (a shotgun's several pellets,
 // a ricochet, a plus-shaped blast) are one flag or number each, read in
 // `world.rs`. More weapons later means more rows, and a little code only for
-// mechanics like gravity wells.
+// mechanics that are more than a number (`Special`: homing, a cluster burst, a
+// teleport, and later things like gravity wells).
 //
 // Pattern: Flyweight. A projectile in flight stores just a weapon id and its
 // own position/velocity. The shared, unchanging stats live once in `WEAPONS`.
@@ -14,10 +15,32 @@ pub const RAILGUN: u8 = 2;
 pub const SCATTER: u8 = 3;
 pub const BOUNCER: u8 = 4;
 pub const BOMB: u8 = 5;
+pub const CLUSTER: u8 = 6;
+pub const SWARM: u8 = 7;
+pub const TELEPORT: u8 = 8;
+pub const NOVA: u8 = 9;
+/// What a Cluster shell splits into. Not in the loadout: only the shell makes it.
+pub const BOMBLET: u8 = 10;
 
-/// What every player carries, in slot order (keys 1-6). A per-player loadout
-/// comes with the loadout screen in M4.
-pub const LOADOUT: [u8; 6] = [BLASTER, SCATTER, ROCKET, BOUNCER, BOMB, RAILGUN];
+/// Every weapon a player can choose from, in the order the loadout screen lists
+/// them. (The menu's shooting range hands out all of them.)
+pub const ARSENAL: [u8; 10] = [BLASTER, SCATTER, ROCKET, BOUNCER, BOMB, RAILGUN, CLUSTER, SWARM, TELEPORT, NOVA];
+
+/// How many weapons a player carries into a match, picked from the arsenal
+/// before it starts (like Liero's weapon menu). Keys 1-5 select them.
+pub const LOADOUT_SIZE: usize = 5;
+
+/// What bots carry, and what the picker starts with.
+pub const DEFAULT_LOADOUT: [u8; LOADOUT_SIZE] = [BLASTER, SCATTER, ROCKET, BOMB, RAILGUN];
+
+/// Is this an acceptable choice: the right number of different arsenal weapons?
+/// A loadout arrives from another player's machine, and nothing that comes from
+/// outside is trusted, so the host checks it before it touches the world.
+pub fn valid_loadout(ids: &[u8]) -> bool {
+    ids.len() == LOADOUT_SIZE
+        && ids.iter().all(|id| ARSENAL.contains(id))
+        && ids.iter().enumerate().all(|(i, id)| !ids[..i].contains(id))
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Kind {
@@ -25,6 +48,19 @@ pub enum Kind {
     Projectile,
     /// Instant line; resolved the moment you pull the trigger.
     Beam,
+}
+
+/// The few behaviours that are more than a number. A weapon has at most one, so
+/// this is an enum and not another pile of flags.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Special {
+    None,
+    /// Steers towards the nearest enemy, turning at most this many radians a second.
+    Homing(f32),
+    /// Where it detonates it splits into this many projectiles of the given weapon.
+    Cluster(u8, u8),
+    /// Where it lands, its owner appears (or swaps places with the player it hit).
+    Teleport,
 }
 
 pub struct WeaponDef {
@@ -62,9 +98,10 @@ pub struct WeaponDef {
     /// circle? Then `blast_radius` is the arm length. A speed of 0 means the
     /// projectile is dropped at the player's feet, and `lifetime` is its fuse.
     pub cross: bool,
+    pub special: Special,
 }
 
-pub static WEAPONS: [WeaponDef; 6] = [
+pub static WEAPONS: [WeaponDef; 11] = [
     WeaponDef {
         name: "Neon Blaster",
         kind: Kind::Projectile,
@@ -84,6 +121,7 @@ pub static WEAPONS: [WeaponDef; 6] = [
         pellets: 1,
         bounce: false,
         cross: false,
+        special: Special::None,
     },
     WeaponDef {
         name: "Rocket",
@@ -104,6 +142,7 @@ pub static WEAPONS: [WeaponDef; 6] = [
         pellets: 1,
         bounce: false,
         cross: false,
+        special: Special::None,
     },
     WeaponDef {
         name: "Railgun",
@@ -124,6 +163,7 @@ pub static WEAPONS: [WeaponDef; 6] = [
         pellets: 1,
         bounce: false,
         cross: false,
+        special: Special::None,
     },
     WeaponDef {
         name: "Scatter",
@@ -144,6 +184,7 @@ pub static WEAPONS: [WeaponDef; 6] = [
         pellets: 8,
         bounce: false,
         cross: false,
+        special: Special::None,
     },
     WeaponDef {
         name: "Bouncer",
@@ -164,6 +205,7 @@ pub static WEAPONS: [WeaponDef; 6] = [
         pellets: 1,
         bounce: true,
         cross: false,
+        special: Special::None,
     },
     WeaponDef {
         name: "Bomb",
@@ -184,5 +226,113 @@ pub static WEAPONS: [WeaponDef; 6] = [
         pellets: 1,
         bounce: false,
         cross: true,
+        special: Special::None,
+    },
+    // ---- the second batch ---------------------------------------------------
+    WeaponDef {
+        name: "Cluster",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 360.0,
+        lifetime: 0.8, // bursts about 290 px out if nothing stops it first
+        cooldown: 0.9,
+        mag: 3,
+        reload: 3.0,
+        spread: 0.02,
+        range: 0.0,
+        blast_radius: 0.0,
+        blast_damage: 0.0,
+        knockback: 0.0,
+        tile_damage: 0,
+        beam_bricks: 0,
+        pellets: 1,
+        bounce: false,
+        cross: false,
+        special: Special::Cluster(7, BOMBLET),
+    },
+    WeaponDef {
+        name: "Swarm",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 300.0,
+        lifetime: 2.2,
+        cooldown: 1.0,
+        mag: 2,
+        reload: 3.2,
+        spread: 0.6, // a wide fan, which then curls in on the target
+        range: 0.0,
+        blast_radius: 30.0,
+        blast_damage: 14.0,
+        knockback: 150.0,
+        tile_damage: 1,
+        beam_bricks: 0,
+        pellets: 6,
+        bounce: false,
+        cross: false,
+        special: Special::Homing(3.0),
+    },
+    WeaponDef {
+        name: "Teleport",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 520.0,
+        lifetime: 1.2,
+        cooldown: 0.6,
+        mag: 3,
+        reload: 2.5,
+        spread: 0.0,
+        range: 0.0,
+        blast_radius: 0.0,
+        blast_damage: 0.0,
+        knockback: 0.0,
+        tile_damage: 0,
+        beam_bricks: 0,
+        pellets: 1,
+        bounce: false,
+        cross: false,
+        special: Special::Teleport,
+    },
+    WeaponDef {
+        name: "Nova",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 240.0,
+        lifetime: 5.0,
+        cooldown: 1.0,
+        mag: 1,
+        reload: 8.0,
+        spread: 0.0,
+        range: 0.0,
+        blast_radius: 230.0, // seven tiles: it clears a room
+        blast_damage: 140.0,
+        knockback: 1000.0,
+        tile_damage: 3,
+        beam_bricks: 0,
+        pellets: 1,
+        bounce: false,
+        cross: false,
+        special: Special::None,
+    },
+    // Not in anyone's loadout: what the Cluster shell splits into.
+    WeaponDef {
+        name: "Bomblet",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 240.0,
+        lifetime: 0.55,
+        cooldown: 0.0,
+        mag: 0,
+        reload: 0.0,
+        spread: 0.0,
+        range: 0.0,
+        blast_radius: 40.0,
+        blast_damage: 24.0,
+        knockback: 300.0,
+        tile_damage: 2,
+        beam_bricks: 0,
+        pellets: 1,
+        bounce: false,
+        cross: false,
+        special: Special::None,
     },
 ];

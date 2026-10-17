@@ -8,7 +8,9 @@
 //     outlines your weapon card and your score chip, and each player's hexagon
 //     on the scoreboard is their in-game colour.
 //   * Hierarchy: the selected weapon is bright and carries the ammo bar;
-//     everything else is dim.
+//     everything else is dim. A match has five weapons, so every card is full
+//     width; the menu's shooting range has ten, so there only the selected card
+//     is wide and the rest shrink to a number and an ammo bar.
 //
 // Read-only like all drawing: it takes `&World` and never changes it.
 
@@ -59,11 +61,14 @@ fn draw_health(world: &World, me: usize) {
 fn draw_weapons(world: &World, me: usize) {
     let player = &world.players[me];
     let mine = player_color(me);
-    let (w, h, gap) = (108.0, BAR_H, 6.0);
+    let compact = player.weapons.len() > 6;
+    let (w_selected, w_other, h, gap) = (108.0, if compact { 50.0 } else { 108.0 }, BAR_H, if compact { 4.0 } else { 6.0 });
+    let mut x = 12.0;
     for (slot, weapon) in player.weapons.iter().enumerate() {
         let def = &WEAPONS[weapon.id as usize];
         let selected = slot == player.current;
-        let x = 12.0 + slot as f32 * (w + gap);
+        let w = if selected { w_selected } else { w_other };
+        let words = selected || !compact; // text only fits on a wide card
         let y = BAR_Y;
 
         draw_rectangle(x, y, w, h, if selected { CARD_BG_SELECTED } else { CARD_BG });
@@ -73,8 +78,11 @@ fn draw_weapons(world: &World, me: usize) {
         }
 
         let (name_color, ammo_color) = if selected { (TEXT, mine) } else { (TEXT_DIM, TEXT_DIM) };
-        draw_text(&format!("{}", slot + 1), x + 6.0, y + 15.0, 14.0, TEXT_DIM);
-        draw_text(def.name, x + 19.0, y + 15.0, 14.0, name_color);
+        // Slot 10 is the 0 key.
+        draw_text(&format!("{}", (slot + 1) % 10), x + 6.0, y + 15.0, 14.0, TEXT_DIM);
+        if words {
+            draw_text(def.name, x + 19.0, y + 15.0, 14.0, name_color);
+        }
 
         // Ammo. A small magazine is drawn as one segment per round (a Railgun is
         // one fat block, a Bomb two), so you can count what is left at a glance;
@@ -97,11 +105,12 @@ fn draw_weapons(world: &World, me: usize) {
             draw_rectangle(bar_x, bar_y, bar_w, 6.0, dark);
             draw_rectangle(bar_x, bar_y, bar_w * weapon.ammo as f32 / def.mag as f32, 6.0, ammo_color);
         }
-        if reloading {
+        if words && reloading {
             draw_text("reloading", x + 6.0, y + 40.0, 14.0, TEXT_DIM);
-        } else if def.mag > 8 {
+        } else if words && def.mag > 8 {
             draw_text(&format!("{}/{}", weapon.ammo, def.mag), x + 6.0, y + 40.0, 14.0, name_color);
         }
+        x += w + gap;
     }
 }
 

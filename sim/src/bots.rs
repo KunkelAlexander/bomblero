@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn bots_fight_and_score() {
-        let mut world = World::new(Tilemap::from_ascii(MAP_GRID), 4, &crate::weapons::LOADOUT, 5);
+        let mut world = World::new(Tilemap::from_ascii(MAP_GRID), 4, &crate::weapons::ARSENAL, 5);
         let mut bots: Vec<Bot> = (0..4).map(|i| Bot::new(100 + i)).collect();
         for _ in 0..60 * 90 {
             let inputs: Vec<Input> = (0..4).map(|i| bots[i].think(&world, i)).collect();

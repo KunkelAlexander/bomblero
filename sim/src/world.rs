@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::input::Input;
 use crate::rng::Rng;
 use crate::tilemap::{tile_center, tile_coords, Tile, Tilemap, TILE};
-use crate::weapons::{Kind, WeaponDef, WEAPONS};
+use crate::weapons::{Kind, Special, WeaponDef, WEAPONS};
 
 pub const DT: f32 = 1.0 / 60.0;
 pub const PLAYER_RADIUS: f32 = 10.0;
@@ -95,6 +95,8 @@ pub enum Event {
     /// whole map.
     TileChanged { x: i32, y: i32, tile: Tile },
     Died { victim: u8, killer: u8, pos: Vec2 },
+    /// `player` jumped from `from` to `to` (the Teleport gun).
+    Teleported { player: u8, from: Vec2, to: Vec2 },
     Respawned { player: u8 },
     MatchWon { player: u8 },
 }
@@ -139,6 +141,15 @@ impl World {
             events: Vec::new(),
             rng: Rng::new(seed),
         }
+    }
+
+    /// Replace a player's weapons with the ones they chose, all fully loaded.
+    /// The world does not judge the choice; whoever calls this (the host) has
+    /// already checked it with `weapons::valid_loadout`.
+    pub fn set_loadout(&mut self, player: usize, loadout: &[u8]) {
+        let p = &mut self.players[player];
+        p.weapons = loadout.iter().map(|&id| full_weapon(id)).collect();
+        p.current = 0;
     }
 
     /// Take the events produced since the last call.
@@ -374,6 +385,9 @@ impl World {
         'next: for mut pr in old {
             let def = &WEAPONS[pr.weapon as usize];
             pr.life -= DT;
+            if let Special::Homing(turn) = def.special {
+                self.steer(&mut pr, turn);
+            }
 
             // Move in sub-steps of at most 8 px so a fast bolt cannot jump
             // over a thin wall or a player between two ticks ("tunnelling").
@@ -421,18 +435,93 @@ impl World {
             }
 
             if pr.life <= 0.0 {
-                if def.blast_radius > 0.0 {
-                    self.explode(pr.pos, def, pr.owner as usize);
+                // The end of the flight is an impact with nothing: shells burst,
+                // orbs land and rockets blow up where they are.
+                if def.blast_radius > 0.0 || matches!(def.special, Special::Cluster(..) | Special::Teleport) {
+                    self.impact(&pr, def, dir, None, None);
                 }
                 continue;
             }
             keep.push(pr);
         }
+        // A burst this tick put its children into the (emptied) list: keep them.
+        keep.append(&mut self.projectiles);
         self.projectiles = keep;
+    }
+
+    /// Homing: turn the velocity towards the nearest living enemy, by at most
+    /// `turn` radians per second. The speed never changes, only the heading, so
+    /// a missile can be out-run around a corner and it still dies on walls.
+    fn steer(&self, pr: &mut Projectile, turn: f32) {
+        let target = (0..self.players.len())
+            .filter(|&j| j != pr.owner as usize && self.players[j].alive)
+            .map(|j| self.players[j].pos)
+            .min_by(|a, b| a.distance_squared(pr.pos).total_cmp(&b.distance_squared(pr.pos)));
+        let Some(target) = target else { return };
+        let want = target - pr.pos;
+        let diff = want.y.atan2(want.x) - pr.vel.y.atan2(pr.vel.x);
+        // Wrap to -PI..PI so it always turns the short way round.
+        let diff = (diff + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+        let (sin, cos) = diff.clamp(-turn * DT, turn * DT).sin_cos();
+        pr.vel = vec2(pr.vel.x * cos - pr.vel.y * sin, pr.vel.x * sin + pr.vel.y * cos);
+    }
+
+    /// The nearest spot to `pos`, walking back along `-dir`, where a circle of
+    /// `radius` fits. A projectile that hit a wall is a few pixels inside it.
+    fn free_point(&self, pos: Vec2, dir: Vec2, radius: f32) -> Option<Vec2> {
+        (0..20).map(|k| pos - dir * (2.0 * k as f32)).find(|&p| !self.map.circle_hits_wall(p, radius))
+    }
+
+    /// Cluster: the shell splits into `count` children, spread evenly around the
+    /// circle with a random twist so no two bursts look alike. The twist comes
+    /// from the sim's own `rng`, so every machine bursts the same way.
+    fn burst(&mut self, pr: &Projectile, dir: Vec2, count: u8, child: u8) {
+        let def = &WEAPONS[child as usize];
+        let at = self.free_point(pr.pos, dir, PROJECTILE_RADIUS).unwrap_or(pr.pos);
+        let twist = self.rng.range(0.0, std::f32::consts::TAU);
+        for k in 0..count {
+            let a = twist + std::f32::consts::TAU * k as f32 / count as f32;
+            self.projectiles.push(Projectile {
+                pos: at,
+                vel: vec2(a.cos(), a.sin()) * def.speed * self.rng.range(0.6, 1.0),
+                weapon: child,
+                owner: pr.owner,
+                life: def.lifetime * self.rng.range(0.7, 1.0),
+            });
+        }
+    }
+
+    /// Teleport: the owner appears where the orb landed, or swaps places with
+    /// the player it hit. If the orb landed in a spot too tight to stand in,
+    /// nothing happens (a fizzle), which is better than getting stuck in a wall.
+    fn teleport(&mut self, pr: &Projectile, dir: Vec2, victim: Option<usize>) {
+        let owner = pr.owner as usize;
+        if !self.players[owner].alive {
+            return; // shot, then died before it landed
+        }
+        let from = self.players[owner].pos;
+        let to = match victim {
+            Some(v) => {
+                let to = self.players[v].pos;
+                self.players[v].pos = from;
+                self.players[v].vel = Vec2::ZERO;
+                Some(to)
+            }
+            None => self.free_point(pr.pos, dir, PLAYER_RADIUS),
+        };
+        let Some(to) = to else { return };
+        self.players[owner].pos = to;
+        self.players[owner].vel = Vec2::ZERO;
+        self.events.push(Event::Teleported { player: owner as u8, from, to });
     }
 
     /// A projectile ended its flight against a wall or a player.
     fn impact(&mut self, pr: &Projectile, def: &WeaponDef, dir: Vec2, victim: Option<usize>, wall: Option<(i32, i32)>) {
+        match def.special {
+            Special::Cluster(count, child) => return self.burst(pr, dir, count, child),
+            Special::Teleport => return self.teleport(pr, dir, victim),
+            _ => {}
+        }
         if def.blast_radius > 0.0 {
             self.explode(pr.pos, def, pr.owner as usize);
             return;
@@ -547,7 +636,7 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 mod tests {
     use super::*;
     use crate::tilemap::MAP_GRID;
-    use crate::weapons::{BLASTER, BOMB, BOUNCER, LOADOUT, RAILGUN, ROCKET, SCATTER};
+    use crate::weapons::{ARSENAL, BLASTER, BOMB, BOMBLET, BOUNCER, CLUSTER, NOVA, RAILGUN, ROCKET, SCATTER, SWARM, TELEPORT};
 
     // These tests need no window, GPU or sound: the payoff of keeping the sim
     // free of rendering code.
@@ -641,10 +730,10 @@ mod tests {
     /// Two players in the Grid map's top-left corner with every weapon, and the
     /// slot number of `weapon` in that loadout.
     fn armed_world(weapon: u8) -> (World, u8) {
-        let mut w = World::new(Tilemap::from_ascii(MAP_GRID), 2, &LOADOUT, 1);
+        let mut w = World::new(Tilemap::from_ascii(MAP_GRID), 2, &ARSENAL, 1);
         w.players[0].pos = tile_center(1, 1);
         w.players[1].pos = tile_center(3, 1);
-        (w, LOADOUT.iter().position(|&id| id == weapon).unwrap() as u8)
+        (w, ARSENAL.iter().position(|&id| id == weapon).unwrap() as u8)
     }
 
     #[test]
@@ -693,6 +782,113 @@ mod tests {
         // Right: two empty tiles and a brick. Left and up: a wall right away.
         // Down: three empty tiles.
         assert_eq!(arms, Some([112.0, 112.0, 16.0, 16.0]));
+    }
+
+    #[test]
+    fn cluster_shell_bursts_into_bomblets() {
+        let (mut w, slot) = armed_world(CLUSTER);
+        w.players[1].pos = tile_center(30, 10);
+        w.drain_events();
+        // Straight into the border wall, 16 px away: it bursts at once.
+        w.step(&[Input { fire: true, weapon: slot, aim: std::f32::consts::PI, ..Default::default() }]);
+        assert_eq!(w.projectiles.len(), 7);
+        assert!(w.projectiles.iter().all(|p| p.weapon == BOMBLET));
+        assert!(w.projectiles.iter().all(|p| !w.map.circle_hits_wall(p.pos, 3.0)), "none may start inside the wall");
+        for _ in 0..60 {
+            w.step(&[]);
+        }
+        assert!(w.projectiles.is_empty(), "every bomblet went off");
+        let blasts = w.drain_events().iter().filter(|e| matches!(e, Event::Explosion { .. })).count();
+        assert!(blasts >= 5, "blasts = {blasts}");
+    }
+
+    #[test]
+    fn swarm_missile_curls_towards_the_enemy() {
+        // The same projectile, once as a homing missile and once as a plain
+        // bolt: the enemy is 32 px off its line, so only homing can hit.
+        let fly = |weapon: u8| {
+            let (mut w, _) = armed_world(SWARM);
+            w.players[0].pos = tile_center(14, 9);
+            w.players[1].pos = tile_center(22, 8);
+            w.projectiles.push(Projectile { pos: tile_center(15, 9), vel: vec2(300.0, 0.0), weapon, owner: 0, life: 2.0 });
+            for _ in 0..60 {
+                w.step(&[]);
+            }
+            w.players[1].hp
+        };
+        assert!(fly(SWARM) < MAX_HP, "the missile should find its target");
+        assert_eq!(fly(BLASTER), MAX_HP, "a plain bolt flies past");
+    }
+
+    #[test]
+    fn teleport_orb_moves_the_owner_to_where_it_lands() {
+        let (mut w, slot) = armed_world(TELEPORT);
+        w.players[1].pos = tile_center(30, 10);
+        w.drain_events();
+        w.step(&[Input { fire: true, weapon: slot, ..Default::default() }]);
+        for _ in 0..20 {
+            w.step(&[]);
+        }
+        // The orb stopped at the brick in tile 4 (x from 128 px): the owner stands just short of it.
+        let p = &w.players[0];
+        assert!(p.pos.x > 100.0 && p.pos.x < 119.0, "x = {}", p.pos.x);
+        assert!(!w.map.circle_hits_wall(p.pos, PLAYER_RADIUS));
+        assert_eq!(w.map.get(4, 1), Tile::Brick(3), "teleporting hurts no brick");
+        assert!(w.drain_events().iter().any(|e| matches!(e, Event::Teleported { player: 0, .. })));
+    }
+
+    #[test]
+    fn teleport_orb_hitting_a_player_swaps_places() {
+        let (mut w, slot) = armed_world(TELEPORT);
+        w.step(&[Input { fire: true, weapon: slot, ..Default::default() }]);
+        for _ in 0..20 {
+            w.step(&[]);
+        }
+        assert_eq!(w.players[0].pos, tile_center(3, 1));
+        assert_eq!(w.players[1].pos, tile_center(1, 1));
+        assert_eq!(w.players[1].hp, MAX_HP, "a swap is harmless");
+    }
+
+    #[test]
+    fn nova_blast_clears_a_room() {
+        let (mut w, slot) = armed_world(NOVA);
+        w.players[1].pos = tile_center(30, 10);
+        w.drain_events();
+        w.step(&[Input { fire: true, weapon: slot, ..Default::default() }]);
+        for _ in 0..40 {
+            w.step(&[]);
+        }
+        assert_eq!(w.map.get(4, 1), Tile::Empty);
+        assert_eq!(w.map.get(5, 1), Tile::Empty);
+        assert!(w.players[0].hp < MAX_HP - 30.0, "even halved, standing this close hurts: hp = {}", w.players[0].hp);
+        assert!(w.drain_events().iter().any(|e| matches!(e, Event::Explosion { radius, .. } if *radius == 230.0)));
+    }
+
+    #[test]
+    fn a_chosen_loadout_replaces_the_weapons() {
+        let mut w = two_player_world();
+        w.players[0].current = 2;
+        w.set_loadout(0, &[NOVA, BOMB]);
+        let ids: Vec<u8> = w.players[0].weapons.iter().map(|s| s.id).collect();
+        assert_eq!(ids, [NOVA, BOMB]);
+        assert_eq!(w.players[0].current, 0);
+        assert_eq!(w.players[1].weapons.len(), 3, "nobody else is touched");
+        // And a respawn keeps what was chosen.
+        w.players[0].alive = false;
+        w.players[0].respawn_timer = 0.0;
+        w.step(&[]);
+        assert_eq!(w.players[0].weapons.iter().map(|s| s.id).collect::<Vec<_>>(), [NOVA, BOMB]);
+    }
+
+    #[test]
+    fn only_five_different_arsenal_weapons_are_a_loadout() {
+        use crate::weapons::{valid_loadout, DEFAULT_LOADOUT};
+        assert!(valid_loadout(&DEFAULT_LOADOUT));
+        assert!(!valid_loadout(&[BLASTER, ROCKET]), "too few");
+        assert!(!valid_loadout(&[0, 1, 2, 3, 4, 5]), "too many");
+        assert!(!valid_loadout(&[BLASTER, BLASTER, ROCKET, BOMB, RAILGUN]), "a weapon twice");
+        assert!(!valid_loadout(&[BLASTER, ROCKET, BOMB, RAILGUN, BOMBLET]), "bomblets are not for picking");
+        assert!(!valid_loadout(&[BLASTER, ROCKET, BOMB, RAILGUN, 200]), "no such weapon");
     }
 
     #[test]

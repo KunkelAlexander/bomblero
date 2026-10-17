@@ -40,6 +40,8 @@ pub struct JoinGame {
     /// Interpolation on? (Toggled with I, to make the effect visible.)
     interpolate: bool,
     code: String,
+    /// The weapons we picked, sent to the host with every `Welcome`.
+    loadout: Vec<u8>,
     /// Have we asked the relay to let us in yet? (Only possible once it is open.)
     asked: bool,
     /// The relay put us in the room; now we wait for the host's Welcome.
@@ -58,11 +60,12 @@ pub struct JoinGame {
 }
 
 impl JoinGame {
-    pub fn new(code: String) -> JoinGame {
+    pub fn new(code: String, loadout: &[u8]) -> JoinGame {
         JoinGame {
             link: RelayLink::connect(RELAY_URL),
             interpolate: true,
             code,
+            loadout: loadout.to_vec(),
             asked: false,
             in_room: false,
             replica: None,
@@ -167,7 +170,12 @@ impl JoinGame {
                     // The first Welcome starts our match; a later one means
                     // the host started a rematch.
                     Some(HostMsg::Welcome(welcome)) => {
-                        self.replica = Some(Replica::new(welcome, delay_for(self.interpolate)))
+                        self.replica = Some(Replica::new(welcome, delay_for(self.interpolate)));
+                        // Now that we have a slot, tell the host what we carry.
+                        // (A rematch is a new match, so it is sent again.)
+                        let bytes = encode_client(&ClientMsg::Loadout(self.loadout.clone()));
+                        self.bytes_up += bytes.len() as u64;
+                        self.link.send(&ToRelay::Data { to: None, bytes });
                     }
                     // Snapshots that arrive before the Welcome are useless
                     // (there is nothing to apply them to) and are dropped.

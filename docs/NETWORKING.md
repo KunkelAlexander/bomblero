@@ -54,6 +54,7 @@ move with it.
 | Direction | Message | When | Size |
 |---|---|---|---|
 | client → host | `Input` | every sim tick the player is connected | ~25 bytes |
+| client → host | `Loadout` | once, right after the `Welcome` | 5 bytes. The host accepts only the first valid one: a second would refill your ammo |
 | client → host | `Ping` | once a second | tiny |
 | host → client | `Welcome` | once, when you join (and after a rematch) | the whole map, several KB |
 | host → client | `Snapshot` | 30 per second | ~400 bytes |

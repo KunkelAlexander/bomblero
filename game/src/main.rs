@@ -11,6 +11,7 @@
 // wire is a loopback in the first case and the relay in the second, and
 // nothing else changes.
 
+mod armory;
 mod controls;
 mod draw;
 mod effects;
@@ -27,6 +28,7 @@ mod socket;
 mod terrain;
 mod view;
 
+use armory::Armory;
 use controls::Controls;
 use join::JoinGame;
 use local::LocalGame;
@@ -51,6 +53,8 @@ fn window_conf() -> Conf {
 /// else, and the main loop just asks the current one to run a frame.
 enum Screen {
     Menu(Menu),
+    /// Choosing weapons, on the way from the menu to a match.
+    Armory(Armory),
     /// A match whose host runs in this process: offline, or with a room open.
     Hosting(HostGame),
     /// A match hosted by a friend.
@@ -66,8 +70,8 @@ struct HostGame {
 }
 
 impl HostGame {
-    fn new(open_room: bool) -> HostGame {
-        let mut game = LocalGame::new(new_seed());
+    fn new(open_room: bool, loadout: &[u8]) -> HostGame {
+        let mut game = LocalGame::new(new_seed(), loadout);
         if open_room {
             game.open_room();
         }
@@ -133,6 +137,8 @@ async fn main() {
     let glow = view::Glow::new();
     let mut controls = Controls::new();
     let mut screen = Screen::Menu(Menu::new());
+    // What the player carried last time: the picker starts from it.
+    let mut loadout = sim::weapons::DEFAULT_LOADOUT.to_vec();
 
     loop {
         // Esc leaves any screen for the menu (the menu itself uses Esc to
@@ -146,11 +152,18 @@ async fn main() {
         let mut next = None;
         match &mut screen {
             Screen::Menu(menu) => {
-                next = menu.frame(&mut controls, &glow).map(|choice| match choice {
-                    Choice::Offline => Screen::Hosting(HostGame::new(false)),
-                    Choice::Host => Screen::Hosting(HostGame::new(true)),
-                    Choice::Join(code) => Screen::Joined(JoinGame::new(code)),
-                });
+                // Every way into a match goes through the weapon picker.
+                next = menu.frame(&mut controls, &glow).map(|choice| Screen::Armory(Armory::new(choice, loadout.clone())));
+            }
+            Screen::Armory(armory) => {
+                if let Some((choice, picked)) = armory.frame(&glow) {
+                    next = Some(match choice {
+                        Choice::Offline => Screen::Hosting(HostGame::new(false, &picked)),
+                        Choice::Host => Screen::Hosting(HostGame::new(true, &picked)),
+                        Choice::Join(code) => Screen::Joined(JoinGame::new(code, &picked)),
+                    });
+                    loadout = picked;
+                }
             }
             Screen::Hosting(host_game) => host_game.frame(&mut controls, &glow),
             Screen::Joined(join_game) => join_game.frame(&mut controls, &glow),

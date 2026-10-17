@@ -31,7 +31,7 @@ pub use throttle::Throttle;
 use protocol::{ClientMsg, PlayerId, Snapshot, Welcome};
 use sim::bots::Bot;
 use sim::tilemap::{Tilemap, MAP_GRID};
-use sim::weapons::LOADOUT;
+use sim::weapons::{valid_loadout, DEFAULT_LOADOUT};
 use sim::{Event, Input, World};
 
 /// Who drives a player slot.
@@ -50,19 +50,22 @@ pub struct Host {
     world: World,
     controllers: Vec<Controller>,
     seed: u32,
+    /// Which humans have already chosen their weapons (see `handle`).
+    chose: Vec<bool>,
 }
 
 impl Host {
     /// A new match with `slots` players, all bots until humans join.
     pub fn new(slots: usize, seed: u32) -> Host {
-        Host::on_map(MAP_GRID, slots, seed)
+        Host::on_map(MAP_GRID, slots, seed, &DEFAULT_LOADOUT)
     }
 
-    /// The same, on another map (the menu's hub is a map too).
-    pub fn on_map(map: &str, slots: usize, seed: u32) -> Host {
-        let world = World::new(Tilemap::from_ascii(map), slots, &LOADOUT, seed);
+    /// The same, on another map and with another starting set of weapons for
+    /// everyone (the menu's hub is a map too, and hands out every weapon).
+    pub fn on_map(map: &str, slots: usize, seed: u32, loadout: &[u8]) -> Host {
+        let world = World::new(Tilemap::from_ascii(map), slots, loadout, seed);
         let controllers = (0..slots).map(|i| Controller::Bot(bot_for(seed, i))).collect();
-        Host { world, controllers, seed }
+        Host { world, controllers, seed, chose: vec![false; slots] }
     }
 
     /// A human arrives: give them the first slot a bot is holding.
@@ -70,6 +73,7 @@ impl Host {
     pub fn join(&mut self) -> Option<Welcome> {
         let slot = self.controllers.iter().position(|c| matches!(c, Controller::Bot(_)))?;
         self.controllers[slot] = Controller::Human(Input::default());
+        self.chose[slot] = false;
         // No events: the tiles above are already up to date, and replaying
         // explosions from before the newcomer arrived would be wrong.
         Some(Welcome { you: slot as PlayerId, tiles: self.world.map.tiles().to_vec(), snapshot: self.snapshot(Vec::new()) })
@@ -95,6 +99,17 @@ impl Host {
                     // Keep only the newest input: if two arrive between ticks
                     // the older one is already out of date.
                     *latest = input;
+                }
+            }
+            // The weapons a human picked. Never trust the client: the choice must
+            // be valid, and only the first one counts, because choosing refills
+            // the magazines (a client could otherwise "reload" by choosing again).
+            // Bots keep the default set.
+            ClientMsg::Loadout(ids) => {
+                let human = matches!(self.controllers.get(id as usize), Some(Controller::Human(_)));
+                if human && !self.chose[id as usize] && valid_loadout(&ids) {
+                    self.world.set_loadout(id as usize, &ids);
+                    self.chose[id as usize] = true;
                 }
             }
             // A ping tests the connection, not the game, so whoever owns the
@@ -220,6 +235,28 @@ mod tests {
         assert!(host.join().is_none(), "no free slot left");
         host.leave(0);
         assert_eq!(host.join().unwrap().you, 0, "a bot gave the slot back");
+    }
+
+    #[test]
+    fn a_player_gets_the_weapons_they_chose_once() {
+        use sim::weapons::{BOMB, NOVA, SWARM, TELEPORT, CLUSTER};
+        let ids = |host: &Host, slot: usize| host.world().players[slot].weapons.iter().map(|w| w.id).collect::<Vec<_>>();
+        let mut host = Host::new(3, 1);
+        host.join(); // slot 0
+        host.handle(0, ClientMsg::Loadout(vec![NOVA, BOMB, SWARM, TELEPORT, CLUSTER]));
+        assert_eq!(ids(&host, 0), [NOVA, BOMB, SWARM, TELEPORT, CLUSTER]);
+
+        // A second choice (a refill trick) and nonsense are both ignored.
+        host.handle(0, ClientMsg::Loadout(DEFAULT_LOADOUT.to_vec()));
+        assert_eq!(ids(&host, 0), [NOVA, BOMB, SWARM, TELEPORT, CLUSTER]);
+        host.join(); // slot 1
+        host.handle(1, ClientMsg::Loadout(vec![NOVA; 5]));
+        host.handle(1, ClientMsg::Loadout(vec![0, 1, 2]));
+        assert_eq!(ids(&host, 1), DEFAULT_LOADOUT, "invalid choices change nothing");
+
+        // Slot 2 is a bot: messages claiming to come from it are not obeyed.
+        host.handle(2, ClientMsg::Loadout(vec![NOVA, BOMB, SWARM, TELEPORT, CLUSTER]));
+        assert_eq!(ids(&host, 2), DEFAULT_LOADOUT);
     }
 
     #[test]

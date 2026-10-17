@@ -34,12 +34,49 @@ fn draw_projectiles(world: &World) {
         let side = vec2(-dir.y, dir.x);
         let c = player_color(p.owner as usize);
         match p.weapon {
-            sim::weapons::ROCKET => {
-                // A sharp white warhead on a tapering flame.
+            sim::weapons::ROCKET | sim::weapons::NOVA => {
+                // A sharp white warhead on a tapering flame. The Nova is the same
+                // rocket twice the size, with a pulsing halo: you see it coming.
+                let s = if p.weapon == sim::weapons::NOVA { 2.2 } else { 1.0 };
+                if s > 1.0 {
+                    let pulse = 0.5 + 0.5 * (world.tick as f32 * 0.4).sin();
+                    draw_poly_lines(p.pos.x, p.pos.y, 6, 16.0 + 6.0 * pulse, dir.y.atan2(dir.x).to_degrees(), 2.0, Color::new(DANGER.r, DANGER.g, DANGER.b, 0.8 - 0.4 * pulse));
+                }
                 let flame = Color::new(DANGER.r, DANGER.g, DANGER.b, 0.85);
-                draw_triangle(p.pos + side * 4.5, p.pos - side * 4.5, p.pos - dir * 24.0, flame);
-                draw_triangle(p.pos + side * 2.0, p.pos - side * 2.0, p.pos - dir * 13.0, Color::new(1.0, 0.95, 0.6, 1.0));
-                draw_triangle(p.pos + dir * 9.0, p.pos - dir * 4.0 + side * 4.0, p.pos - dir * 4.0 - side * 4.0, WHITE);
+                draw_triangle(p.pos + side * 4.5 * s, p.pos - side * 4.5 * s, p.pos - dir * 24.0 * s, flame);
+                draw_triangle(p.pos + side * 2.0 * s, p.pos - side * 2.0 * s, p.pos - dir * 13.0 * s, Color::new(1.0, 0.95, 0.6, 1.0));
+                draw_triangle(p.pos + dir * 9.0 * s, p.pos - dir * 4.0 * s + side * 4.0 * s, p.pos - dir * 4.0 * s - side * 4.0 * s, WHITE);
+            }
+            sim::weapons::CLUSTER => {
+                // A bomb-like shell that tumbles, with three bomblets showing
+                // through: it looks like something that is about to split.
+                let spin = world.tick as f32 * 5.0;
+                draw_poly(p.pos.x, p.pos.y, 6, 8.0, spin, Color::new(0.12, 0.05, 0.02, 1.0));
+                draw_poly_lines(p.pos.x, p.pos.y, 6, 8.0, spin, 2.0, DANGER);
+                for k in 0..3 {
+                    let a = spin.to_radians() + k as f32 * std::f32::consts::TAU / 3.0;
+                    draw_circle(p.pos.x + a.cos() * 3.5, p.pos.y + a.sin() * 3.5, 1.6, WHITE);
+                }
+            }
+            sim::weapons::BOMBLET => {
+                draw_poly(p.pos.x, p.pos.y, 4, 3.5, 45.0, DANGER);
+                draw_circle(p.pos.x, p.pos.y, 1.4, WHITE);
+            }
+            sim::weapons::SWARM => {
+                // Six of these fly at once, so each is a small needle in its
+                // owner's colour with a short orange tail.
+                draw_triangle(p.pos + side * 2.0, p.pos - side * 2.0, p.pos - dir * 12.0, Color::new(DANGER.r, DANGER.g, DANGER.b, 0.7));
+                draw_triangle(p.pos + dir * 6.0, p.pos - dir * 3.0 + side * 2.5, p.pos - dir * 3.0 - side * 2.5, c);
+                draw_circle(p.pos.x, p.pos.y, 1.2, WHITE);
+            }
+            sim::weapons::TELEPORT => {
+                // A hollow hexagon that spins and breathes, in its owner's colour:
+                // not a weapon of danger, so not orange.
+                let pulse = 0.5 + 0.5 * (world.tick as f32 * 0.5).sin();
+                let spin = world.tick as f32 * 8.0;
+                draw_poly(p.pos.x, p.pos.y, 6, 7.0, spin, Color::new(c.r * 0.2, c.g * 0.2, c.b * 0.2, 1.0));
+                draw_poly_lines(p.pos.x, p.pos.y, 6, 7.0 + 3.0 * pulse, spin, 2.0, c);
+                draw_circle(p.pos.x, p.pos.y, 2.0, WHITE);
             }
             sim::weapons::BOMB => {
                 // Orange means danger. The core blinks faster as the fuse burns

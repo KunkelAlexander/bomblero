@@ -8,6 +8,7 @@
 // The conversation, in full:
 //
 //   client                                  host
+//     │ ── ClientMsg::Loadout ──────────────> │   once: "these are my five weapons"
 //     │ ── ClientMsg::Input ────────────────> │   "here is what my player wants"
 //     │                                       │   (host steps the sim)
 //     │ <──────────── HostMsg::Welcome ────── │   once, when you join
@@ -38,6 +39,10 @@ pub enum ClientMsg {
     /// The player's wishes for now. Sent once per rendered frame; the host
     /// keeps only the newest one per player.
     Input(Input),
+    /// The weapons this player picked before the match (ids into `WEAPONS`).
+    /// Sent once, right after the `Welcome`. The host checks it and accepts only
+    /// the first one: a second would be a free refill of every magazine.
+    Loadout(Vec<u8>),
     /// "Are you there? How long does a round trip take?" The token is echoed
     /// back unchanged in `HostMsg::Pong`.
     Ping { token: u32 },
