@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Neon Bomber</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+    /* The canvas fills the window; the game letterboxes its fixed 1280x720 view inside it. */
+    canvas { display: block; position: absolute; inset: 0;
+             width: 100%; height: 100%; outline: none; }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas" tabindex="1"></canvas>
+  <!-- gl.js is miniquad's JS glue (copied from the miniquad crate) -->
+  <script src="gl.js"></script>
+  <script>load("game.wasm");</script>
+</body>
+</html>

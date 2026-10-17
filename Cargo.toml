@@ -1,0 +1,10 @@
+# Workspace root. Only the game crate exists for now; `protocol` and `server`
+# join in milestone M2 (online).
+[workspace]
+members = ["game"]
+resolver = "2"
+
+[profile.release]
+# Smaller .wasm download for GitHub Pages.
+opt-level = 3
+lto = true
