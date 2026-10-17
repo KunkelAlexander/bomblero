@@ -67,10 +67,16 @@ impl Glow {
 
     /// Start drawing the scene. Afterwards, draw in world coordinates.
     pub fn begin(&self) {
+        self.resume();
+        clear_background(BLACK);
+    }
+
+    /// Draw into the scene again (without clearing it) after drawing somewhere
+    /// else, e.g. the lightmap.
+    pub fn resume(&self) {
         let mut cam = Camera2D::from_display_rect(Rect::new(-ORIGIN.x, -ORIGIN.y, WIDTH, HEIGHT));
         cam.render_target = Some(self.scene.clone());
         set_camera(&cam);
-        clear_background(BLACK);
     }
 
     /// Finish: put the scene on the window with the glow applied.

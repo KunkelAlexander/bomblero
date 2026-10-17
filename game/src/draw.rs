@@ -7,7 +7,7 @@
 
 use macroquad::prelude::*;
 use sim::world::MAX_HP;
-use sim::{World, PLAYER_RADIUS};
+use sim::{World, PLAYER_RADIUS, WEAPONS};
 
 pub fn player_color(i: usize) -> Color {
     match i % 4 {
@@ -21,28 +21,9 @@ pub fn player_color(i: usize) -> Color {
 /// The colour of danger: rockets and explosions, whoever fired them.
 pub const DANGER: Color = Color::new(1.0, 0.55, 0.1, 1.0);
 
-/// A soft pool of coloured light lying on the floor, brightest in the middle.
-/// Stacked translucent discs fake a gradient cheaply; it is how colour spills
-/// onto the grey stone without making the stone itself glow.
-pub fn light_pool(pos: Vec2, radius: f32, color: Color, strength: f32) {
-    const LAYERS: usize = 8;
-    for i in 0..LAYERS {
-        let r = radius * (1.0 - i as f32 / LAYERS as f32);
-        draw_circle(pos.x, pos.y, r, Color::new(color.r, color.g, color.b, strength * 1.6 / LAYERS as f32));
-    }
-}
-
-/// Draws everything except the terrain (see terrain.rs), which the presenter
-/// draws first so it sits underneath.
+/// Draws the actors. The presenter draws the terrain first (terrain.rs) and
+/// lights it (lights.rs) before this, so the actors are never darkened.
 pub fn draw_world(world: &World, t: f32) {
-    // Light first, so it lies under the things casting it.
-    for p in world.players.iter().enumerate().filter(|(_, p)| p.alive) {
-        light_pool(p.1.pos, 70.0, player_color(p.0), 0.22);
-    }
-    for p in &world.projectiles {
-        let (radius, color) = if p.weapon == sim::weapons::ROCKET { (60.0, DANGER) } else { (28.0, player_color(p.owner as usize)) };
-        light_pool(p.pos, radius, color, 0.2);
-    }
     draw_projectiles(world);
     draw_players(world, t);
 }
@@ -51,21 +32,45 @@ fn draw_projectiles(world: &World) {
     for p in &world.projectiles {
         let dir = p.vel.normalize_or_zero();
         let side = vec2(-dir.y, dir.x);
-        if p.weapon == sim::weapons::ROCKET {
-            // A sharp white warhead on a tapering flame.
-            let flame = Color::new(DANGER.r, DANGER.g, DANGER.b, 0.85);
-            draw_triangle(p.pos + side * 4.5, p.pos - side * 4.5, p.pos - dir * 24.0, flame);
-            draw_triangle(p.pos + side * 2.0, p.pos - side * 2.0, p.pos - dir * 13.0, Color::new(1.0, 0.95, 0.6, 1.0));
-            draw_triangle(p.pos + dir * 9.0, p.pos - dir * 4.0 + side * 4.0, p.pos - dir * 4.0 - side * 4.0, WHITE);
-        } else {
-            // A bolt is a diamond with a white core and a fading tail.
-            let c = player_color(p.owner as usize);
-            draw_triangle(p.pos + side * 2.5, p.pos - side * 2.5, p.pos - dir * 16.0, Color::new(c.r, c.g, c.b, 0.45));
-            let (front, back) = (p.pos + dir * 8.0, p.pos - dir * 5.0);
-            draw_triangle(front, p.pos + side * 3.5, p.pos - side * 3.5, c);
-            draw_triangle(back, p.pos + side * 3.5, p.pos - side * 3.5, c);
-            draw_triangle(p.pos + dir * 5.0, p.pos + side * 1.6, p.pos - side * 1.6, WHITE);
-            draw_triangle(p.pos - dir * 2.5, p.pos + side * 1.6, p.pos - side * 1.6, WHITE);
+        let c = player_color(p.owner as usize);
+        match p.weapon {
+            sim::weapons::ROCKET => {
+                // A sharp white warhead on a tapering flame.
+                let flame = Color::new(DANGER.r, DANGER.g, DANGER.b, 0.85);
+                draw_triangle(p.pos + side * 4.5, p.pos - side * 4.5, p.pos - dir * 24.0, flame);
+                draw_triangle(p.pos + side * 2.0, p.pos - side * 2.0, p.pos - dir * 13.0, Color::new(1.0, 0.95, 0.6, 1.0));
+                draw_triangle(p.pos + dir * 9.0, p.pos - dir * 4.0 + side * 4.0, p.pos - dir * 4.0 - side * 4.0, WHITE);
+            }
+            sim::weapons::BOMB => {
+                // Orange means danger. The core blinks faster as the fuse burns
+                // down, so you can read when to be somewhere else.
+                let burnt = 1.0 - p.life / WEAPONS[sim::weapons::BOMB as usize].lifetime;
+                let lit = (burnt * (8.0 + 30.0 * burnt) * std::f32::consts::TAU).sin() > 0.0;
+                draw_poly(p.pos.x, p.pos.y, 6, 9.0, 0.0, Color::new(0.12, 0.05, 0.02, 1.0));
+                draw_poly_lines(p.pos.x, p.pos.y, 6, 9.0, 0.0, 2.0, DANGER);
+                draw_poly(p.pos.x, p.pos.y, 6, 4.0, 0.0, if lit { WHITE } else { DANGER });
+            }
+            sim::weapons::SCATTER => {
+                // Eight of these fly at once, so each is small.
+                draw_poly(p.pos.x, p.pos.y, 4, 3.5, dir.y.atan2(dir.x).to_degrees(), c);
+                draw_poly(p.pos.x, p.pos.y, 4, 1.5, dir.y.atan2(dir.x).to_degrees(), WHITE);
+            }
+            sim::weapons::BOUNCER => {
+                // A spinning hollow diamond: it looks like something that bounces.
+                let spin = world.tick as f32 * 6.0;
+                draw_poly(p.pos.x, p.pos.y, 4, 6.0, spin, Color::new(c.r * 0.25, c.g * 0.25, c.b * 0.25, 1.0));
+                draw_poly_lines(p.pos.x, p.pos.y, 4, 6.5, spin, 2.0, c);
+                draw_circle(p.pos.x, p.pos.y, 1.8, WHITE);
+            }
+            _ => {
+                // A bolt is a diamond with a white core and a fading tail.
+                draw_triangle(p.pos + side * 2.5, p.pos - side * 2.5, p.pos - dir * 16.0, Color::new(c.r, c.g, c.b, 0.45));
+                let (front, back) = (p.pos + dir * 8.0, p.pos - dir * 5.0);
+                draw_triangle(front, p.pos + side * 3.5, p.pos - side * 3.5, c);
+                draw_triangle(back, p.pos + side * 3.5, p.pos - side * 3.5, c);
+                draw_triangle(p.pos + dir * 5.0, p.pos + side * 1.6, p.pos - side * 1.6, WHITE);
+                draw_triangle(p.pos - dir * 2.5, p.pos + side * 1.6, p.pos - side * 1.6, WHITE);
+            }
         }
     }
 }

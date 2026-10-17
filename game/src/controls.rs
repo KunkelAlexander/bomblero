@@ -28,7 +28,7 @@ impl Controls {
         let player = &world.players[me];
         let slots = player.weapons.len() as i32;
 
-        let keys = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5];
+        let keys = [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5, KeyCode::Key6];
         for (slot, key) in keys.iter().enumerate().take(slots as usize) {
             if is_key_pressed(*key) {
                 self.selected = slot as u8;

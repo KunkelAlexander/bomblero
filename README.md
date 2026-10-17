@@ -24,19 +24,22 @@ Early but playable. Done so far:
 * Free movement (WASD) with mouse aim, in a destructible tile arena: the light
   grey pebbles break (one facet per hit), the dark rounded walls don't. The map
   mixes L, T and Z walls, brick patches and an open middle.
-* Three weapons as rows of a data table: **Neon Blaster** (fast bolts),
-  **Rocket** (explosion that digs a crater) and **Railgun** (piercing beam).
-  Each has a magazine and reloads automatically.
+* Six weapons as rows of a data table: **Neon Blaster** (fast bolts),
+  **Scatter** (shotgun), **Rocket** (explosion that digs a crater), **Bouncer**
+  (ricochets off walls), **Bomb** (dropped at your feet, plus-shaped blast that
+  walls cut short) and **Railgun** (piercing beam). Each has a magazine and
+  reloads automatically.
 * Simple bots, 100 HP, respawning, first to 15 kills.
 * Online play with room codes: one player hosts, friends join from their own
   browsers. Joiners see the match smoothed by interpolation, with a ping readout.
 * A look of its own: a soft grey stone world, crisp coloured actors, colour for
-  *who* and orange for *danger*, and pools of coloured light on the floor. Only
-  the brightest things glow. A quiet HUD strip under the map shows your weapons
+  *who* and orange for *danger*, and real lighting: the arena is dark and every player, shot and
+  explosion lights the stone, with shadows behind walls. Only the brightest
+  things glow. A quiet HUD strip under the map shows your weapons
   and ammo, the scoreboard (your colour marks you) and the room status.
 
 Planned (see [PLAN.md](PLAN.md)): synthesized sound and more effects, then a
-grapple hook, block building, 15 weapons, a loadout screen, three maps and a
+grapple hook, block building, nine more weapons, a loadout screen, three maps and a
 match flow. Not built yet.
 
 ## Play it
@@ -63,7 +66,7 @@ one.
 | W A S D | move |
 | mouse | aim |
 | left button | fire |
-| 1 2 3, Q / E, mouse wheel | choose weapon |
+| 1-6, Q / E, mouse wheel | choose weapon |
 | R | restart the match (offline or when hosting) |
 | I | (joiner) turn interpolation on or off, to see what it does |
 | Esc | back to the menu |

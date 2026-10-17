@@ -12,7 +12,7 @@ use glam::{vec2, Vec2};
 
 use crate::input::Input;
 use crate::rng::Rng;
-use crate::weapons::{BLASTER, RAILGUN, ROCKET};
+use crate::weapons::{BLASTER, BOUNCER, RAILGUN, ROCKET, SCATTER};
 use crate::world::World;
 
 pub struct Bot {
@@ -88,20 +88,23 @@ impl Bot {
         input
     }
 
-    /// Prefer the railgun at range, the rocket at mid range, the blaster up
-    /// close, but never pick a weapon that is empty or reloading.
+    /// Prefer the railgun at range, the rocket at mid range, the shotgun up
+    /// close, but never pick a weapon that is empty or reloading. The bouncer is
+    /// what a bot uses against a target it cannot see: bolts that come round
+    /// corners. Bots never drop bombs: placing one and walking away is a plan,
+    /// and bots do not make plans.
     fn pick_weapon(&self, world: &World, me: usize, dist: f32, sees: bool) -> u8 {
-        let preferred: [u8; 3] = if !sees {
-            [ROCKET, RAILGUN, BLASTER]
+        let preferred: &[u8] = if !sees {
+            &[ROCKET, BOUNCER, RAILGUN, BLASTER]
         } else if dist > 450.0 {
-            [RAILGUN, ROCKET, BLASTER]
+            &[RAILGUN, ROCKET, BOUNCER, BLASTER]
         } else if dist > 150.0 {
-            [ROCKET, BLASTER, RAILGUN]
+            &[ROCKET, BOUNCER, BLASTER, RAILGUN]
         } else {
-            [BLASTER, ROCKET, RAILGUN]
+            &[SCATTER, BLASTER, ROCKET, RAILGUN]
         };
         let weapons = &world.players[me].weapons;
-        for id in preferred {
+        for &id in preferred {
             if let Some(slot) = weapons.iter().position(|w| w.id == id && w.ammo > 0 && w.reload == 0.0) {
                 return slot as u8;
             }
@@ -123,7 +126,7 @@ mod tests {
 
     #[test]
     fn bots_fight_and_score() {
-        let mut world = World::new(Tilemap::from_ascii(MAP_GRID), 4, &[BLASTER, ROCKET, RAILGUN], 5);
+        let mut world = World::new(Tilemap::from_ascii(MAP_GRID), 4, &crate::weapons::LOADOUT, 5);
         let mut bots: Vec<Bot> = (0..4).map(|i| Bot::new(100 + i)).collect();
         for _ in 0..60 * 90 {
             let inputs: Vec<Input> = (0..4).map(|i| bots[i].think(&world, i)).collect();

@@ -28,8 +28,8 @@ const BAR_Y: f32 = HUD_TOP + 4.0;
 const BAR_H: f32 = 44.0;
 
 /// `down`/`up` are bytes per second on the wire; `banner` is a line of status
-/// (room code, ping) from whoever is playing.
-pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32, up: f32) {
+/// (room code, ping) from whoever is playing; `frame_ms` the time per frame.
+pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32, up: f32, frame_ms: f32) {
     draw_rectangle(0.0, HUD_TOP, 1280.0, 768.0 - HUD_TOP, BAR_BG);
     draw_line(0.0, HUD_TOP, 1280.0, HUD_TOP, 1.0, Color::new(0.16, 0.17, 0.2, 1.0));
 
@@ -38,7 +38,7 @@ pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32
 
     // Right: the status line, with the network cost under it in the quietest grey.
     right_text(banner, 1264.0, BAR_Y + 18.0, 18.0, TEXT);
-    right_text(&format!("net  in {:.1} KB/s   out {:.1} KB/s", down / 1024.0, up / 1024.0), 1264.0, BAR_Y + 38.0, 16.0, TEXT_DIM);
+    right_text(&format!("in {:.1} KB/s   out {:.1} KB/s   {:.1} ms", down / 1024.0, up / 1024.0, frame_ms), 1264.0, BAR_Y + 38.0, 14.0, TEXT_DIM);
 
     draw_messages(world, me, can_restart);
 }
@@ -46,7 +46,7 @@ pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32
 fn draw_weapons(world: &World, me: usize) {
     let player = &world.players[me];
     let mine = player_color(me);
-    let (w, h, gap) = (172.0, BAR_H, 8.0);
+    let (w, h, gap) = (108.0, BAR_H, 6.0);
     for (slot, weapon) in player.weapons.iter().enumerate() {
         let def = &WEAPONS[weapon.id as usize];
         let selected = slot == player.current;
@@ -60,24 +60,24 @@ fn draw_weapons(world: &World, me: usize) {
         }
 
         let (name_color, ammo_color) = if selected { (TEXT, mine) } else { (TEXT_DIM, TEXT_DIM) };
-        draw_text(&format!("{}", slot + 1), x + 7.0, y + 17.0, 16.0, TEXT_DIM);
-        draw_text(def.name, x + 22.0, y + 17.0, 16.0, name_color);
+        draw_text(&format!("{}", slot + 1), x + 6.0, y + 15.0, 14.0, TEXT_DIM);
+        draw_text(def.name, x + 19.0, y + 15.0, 14.0, name_color);
 
-        // Ammo bar: pips of the magazine; while reloading it refills as progress.
+        // Ammo bar: the magazine; while reloading it refills as progress.
         let reloading = weapon.reload > 0.0;
         let fill = if reloading { 1.0 - weapon.reload / def.reload } else { weapon.ammo as f32 / def.mag as f32 };
-        let (bar_x, bar_w) = (x + 8.0, w - 16.0);
-        draw_rectangle(bar_x, y + 28.0, bar_w, 5.0, Color::new(0.03, 0.03, 0.04, 1.0));
-        draw_rectangle(bar_x, y + 28.0, bar_w * fill, 5.0, if reloading { TEXT_DIM } else { ammo_color });
+        let (bar_x, bar_w) = (x + 6.0, w - 12.0);
+        draw_rectangle(bar_x, y + 22.0, bar_w, 4.0, Color::new(0.03, 0.03, 0.04, 1.0));
+        draw_rectangle(bar_x, y + 22.0, bar_w * fill, 4.0, if reloading { TEXT_DIM } else { ammo_color });
         let status = if reloading { "reloading".to_string() } else { format!("{}/{}", weapon.ammo, def.mag) };
-        right_text(&status, x + w - 8.0, y + 17.0, 16.0, if reloading { TEXT_DIM } else { name_color });
+        draw_text(&status, x + 6.0, y + 39.0, 14.0, if reloading { TEXT_DIM } else { name_color });
     }
 }
 
 fn draw_scores(world: &World, me: usize) {
-    let (chip_w, chip_h) = (66.0, 34.0);
+    let (chip_w, chip_h) = (58.0, 34.0);
     // A fixed spot (not centred) so it never collides with the weapon cards.
-    let mut x = 580.0;
+    let mut x = 706.0;
     for (i, p) in world.players.iter().enumerate() {
         let c = player_color(i);
         let y = BAR_Y + 5.0;
@@ -86,11 +86,11 @@ fn draw_scores(world: &World, me: usize) {
             draw_rectangle(x, y, chip_w - 4.0, chip_h, Color::new(c.r, c.g, c.b, 0.14));
             draw_rectangle_lines(x, y, chip_w - 4.0, chip_h, 2.0, c);
         }
-        draw_poly(x + 17.0, y + chip_h / 2.0, 6, 8.0, 0.0, c);
-        draw_text(&format!("{}", p.kills), x + 32.0, y + 25.0, 28.0, TEXT);
+        draw_poly(x + 14.0, y + chip_h / 2.0, 6, 7.0, 0.0, c);
+        draw_text(&format!("{}", p.kills), x + 27.0, y + 25.0, 26.0, TEXT);
         x += chip_w;
     }
-    draw_text(&format!("first to {SCORE_LIMIT}"), x + 8.0, BAR_Y + 28.0, 16.0, TEXT_DIM);
+    draw_text(&format!("first to {SCORE_LIMIT}"), x + 8.0, BAR_Y + 33.0, 14.0, TEXT_DIM);
 }
 
 /// The two messages that belong over the arena. They get a dark plate so they

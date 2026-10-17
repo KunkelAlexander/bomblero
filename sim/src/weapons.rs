@@ -1,7 +1,9 @@
 // Pattern: Type Object. A "weapon type" is a row of data in a table, not a
-// Rust type. The three weapons below behave differently only because their
-// numbers differ. Adding the other twelve weapons later is mostly adding rows
-// (plus a little code for the genuinely new mechanics like gravity wells).
+// Rust type. The weapons below behave differently mostly because their
+// numbers differ; the few genuinely new mechanics (a shotgun's several pellets,
+// a ricochet, a plus-shaped blast) are one flag or number each, read in
+// `world.rs`. More weapons later means more rows, and a little code only for
+// mechanics like gravity wells.
 //
 // Pattern: Flyweight. A projectile in flight stores just a weapon id and its
 // own position/velocity. The shared, unchanging stats live once in `WEAPONS`.
@@ -9,6 +11,13 @@
 pub const BLASTER: u8 = 0;
 pub const ROCKET: u8 = 1;
 pub const RAILGUN: u8 = 2;
+pub const SCATTER: u8 = 3;
+pub const BOUNCER: u8 = 4;
+pub const BOMB: u8 = 5;
+
+/// What every player carries, in slot order (keys 1-6). A per-player loadout
+/// comes with the loadout screen in M4.
+pub const LOADOUT: [u8; 6] = [BLASTER, SCATTER, ROCKET, BOUNCER, BOMB, RAILGUN];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Kind {
@@ -45,9 +54,17 @@ pub struct WeaponDef {
     pub tile_damage: u8,
     /// How many bricks a beam can cut through before it stops.
     pub beam_bricks: u8,
+    /// Projectiles per shot (a shotgun fires many, each with its own spread).
+    pub pellets: u8,
+    /// Does the projectile ricochet off walls instead of stopping at them?
+    pub bounce: bool,
+    /// Is the blast a plus shape along the tile grid (Bomberman) instead of a
+    /// circle? Then `blast_radius` is the arm length. A speed of 0 means the
+    /// projectile is dropped at the player's feet, and `lifetime` is its fuse.
+    pub cross: bool,
 }
 
-pub static WEAPONS: [WeaponDef; 3] = [
+pub static WEAPONS: [WeaponDef; 6] = [
     WeaponDef {
         name: "Neon Blaster",
         kind: Kind::Projectile,
@@ -64,6 +81,9 @@ pub static WEAPONS: [WeaponDef; 3] = [
         knockback: 60.0,
         tile_damage: 0,
         beam_bricks: 0,
+        pellets: 1,
+        bounce: false,
+        cross: false,
     },
     WeaponDef {
         name: "Rocket",
@@ -81,6 +101,9 @@ pub static WEAPONS: [WeaponDef; 3] = [
         knockback: 650.0,
         tile_damage: 3,
         beam_bricks: 0,
+        pellets: 1,
+        bounce: false,
+        cross: false,
     },
     WeaponDef {
         name: "Railgun",
@@ -98,5 +121,68 @@ pub static WEAPONS: [WeaponDef; 3] = [
         knockback: 350.0,
         tile_damage: 3,
         beam_bricks: 2,
+        pellets: 1,
+        bounce: false,
+        cross: false,
+    },
+    WeaponDef {
+        name: "Scatter",
+        kind: Kind::Projectile,
+        damage: 9.0,
+        speed: 650.0,
+        lifetime: 0.35, // short life = short range (~230 px)
+        cooldown: 0.8,
+        mag: 6,
+        reload: 1.8,
+        spread: 0.2,
+        range: 0.0,
+        blast_radius: 0.0,
+        blast_damage: 0.0,
+        knockback: 45.0,
+        tile_damage: 1,
+        beam_bricks: 0,
+        pellets: 8,
+        bounce: false,
+        cross: false,
+    },
+    WeaponDef {
+        name: "Bouncer",
+        kind: Kind::Projectile,
+        damage: 22.0,
+        speed: 520.0,
+        lifetime: 3.0,
+        cooldown: 0.35,
+        mag: 8,
+        reload: 1.6,
+        spread: 0.02,
+        range: 0.0,
+        blast_radius: 0.0,
+        blast_damage: 0.0,
+        knockback: 120.0,
+        tile_damage: 0,
+        beam_bricks: 0,
+        pellets: 1,
+        bounce: true,
+        cross: false,
+    },
+    WeaponDef {
+        name: "Bomb",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 0.0,
+        lifetime: 1.8,
+        cooldown: 0.8,
+        mag: 2,
+        reload: 3.0,
+        spread: 0.0,
+        range: 0.0,
+        blast_radius: 96.0, // three tiles per arm
+        blast_damage: 75.0,
+        knockback: 450.0,
+        tile_damage: 3,
+        beam_bricks: 0,
+        pellets: 1,
+        bounce: false,
+        cross: true,
     },
 ];

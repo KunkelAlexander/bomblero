@@ -18,6 +18,70 @@ void main() {
 }
 ";
 
+// Draws a texture as it is. Used where the blend mode (not the shader) does the
+// work, e.g. multiplying the lightmap over the scene.
+pub const COPY_FRAGMENT: &str = "#version 100
+precision mediump float;
+varying vec2 uv;
+uniform sampler2D Texture;
+void main() {
+    gl_FragColor = texture2D(Texture, uv);
+}
+";
+
+// One light, drawn as a square of the lightmap around it. `world` is the
+// position of each pixel in game coordinates (handed over by the vertex shader).
+pub const LIGHT_VERTEX: &str = "#version 100
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+varying vec2 world;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1.0);
+    world = position.xy;
+}
+";
+
+// Brightness falls off smoothly with distance. Shadows: walk from the pixel to
+// the light and add up how much wall we pass through (the mask has one texel per
+// tile, 1 where light cannot pass). Behind a wall that is plenty, so it is dark;
+// the first few pixels *inside* a wall facing the light get a fading edge of
+// light, which is what makes walls look lit from the side.
+// The loop has a fixed count because GLSL 100 (WebGL) demands it; the step length
+// grows with distance, so a 32 px wall is never stepped over.
+pub const LIGHT_FRAGMENT: &str = "#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+varying vec2 world;
+uniform vec2 light;
+uniform float radius;
+uniform vec3 tint; // light colour times strength
+uniform vec2 map_px; // size of the map in pixels
+uniform sampler2D Mask;
+
+void main() {
+    vec2 to_light = light - world;
+    float d = length(to_light);
+    if (d >= radius) {
+        discard;
+    }
+    float in_wall = 0.0;
+    float step_px = d / 24.0;
+    for (int i = 0; i < 24; i++) {
+        vec2 p = world + to_light * (float(i) / 24.0);
+        in_wall += texture2D(Mask, p / map_px).r * step_px;
+    }
+    float lit = 1.0 - clamp(in_wall / 14.0, 0.0, 1.0);
+    float fall = 1.0 - d / radius;
+    gl_FragColor = vec4(tint * (fall * fall * lit), 1.0);
+}
+";
+
 // Cheap glow: average a ring of neighbouring pixels (a blur) and add it on top
 // of the sharp image. Bright thin lines bleed light into the dark around them,
 // which is the whole "neon" look. M3 replaces this with a proper two-pass

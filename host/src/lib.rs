@@ -31,7 +31,7 @@ pub use throttle::Throttle;
 use protocol::{ClientMsg, PlayerId, Snapshot, Welcome};
 use sim::bots::Bot;
 use sim::tilemap::{Tilemap, MAP_GRID};
-use sim::weapons::{BLASTER, RAILGUN, ROCKET};
+use sim::weapons::LOADOUT;
 use sim::{Event, Input, World};
 
 /// Who drives a player slot.
@@ -55,7 +55,7 @@ pub struct Host {
 impl Host {
     /// A new match with `slots` players, all bots until humans join.
     pub fn new(slots: usize, seed: u32) -> Host {
-        let world = World::new(Tilemap::from_ascii(MAP_GRID), slots, &[BLASTER, ROCKET, RAILGUN], seed);
+        let world = World::new(Tilemap::from_ascii(MAP_GRID), slots, &LOADOUT, seed);
         let controllers = (0..slots).map(|i| Controller::Bot(bot_for(seed, i))).collect();
         Host { world, controllers, seed }
     }
@@ -242,7 +242,11 @@ mod tests {
             }
         }
         println!("60 snapshots/s: {every_tick} B/s,  30 snapshots/s: {every_second_tick} B/s");
-        assert!(every_tick < 30_000, "snapshots grew to {every_tick} B/s");
+        // Raised from 30_000 when the Scatter arrived: its 8 pellets per shot are
+        // 8 projectiles in every snapshot. Friends get 30 snapshots/s anyway, so
+        // about half of this. If it grows again, shrink `Projectile` on the wire
+        // (e.g. positions as 16-bit integers) before raising the limit.
+        assert!(every_tick < 40_000, "snapshots grew to {every_tick} B/s");
         // Events ride along, so halving the rate saves a bit less than half.
         assert!(every_second_tick * 10 < every_tick * 6);
     }

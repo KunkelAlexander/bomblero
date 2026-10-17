@@ -8,6 +8,7 @@ use protocol::replica::Replica;
 use crate::draw;
 use crate::effects::Effects;
 use crate::hud;
+use crate::lights::{self, Lights};
 use crate::net::RateMeter;
 use crate::terrain::Terrain;
 use crate::view::Glow;
@@ -16,6 +17,9 @@ use crate::view::Glow;
 pub struct Presenter {
     effects: Effects,
     terrain: Terrain,
+    lights: Option<Lights>,
+    /// Smoothed time between frames, shown in the HUD so a slow GPU is visible.
+    frame_ms: f32,
     up_rate: RateMeter,
     down_rate: RateMeter,
 }
@@ -36,12 +40,19 @@ impl Presenter {
         self.down_rate.update(get_time(), down);
 
         self.terrain.update(&replica.world.map);
+        self.frame_ms += (frame * 1000.0 - self.frame_ms) * 0.05;
+
+        let mut lights = Vec::new();
+        lights::from_world(&replica.world, &mut lights);
+        self.effects.lights(&mut lights);
 
         glow.begin();
         self.terrain.draw(&replica.world.map);
+        // Created on the first frame: it needs the graphics context.
+        self.lights.get_or_insert_with(Lights::new).apply(glow, &replica.world.map, &lights);
         draw::draw_world(&replica.world, get_time() as f32);
         self.effects.draw();
-        hud::draw(&replica.world, replica.me as usize, can_restart, banner, self.down_rate.per_second, self.up_rate.per_second);
+        hud::draw(&replica.world, replica.me as usize, can_restart, banner, self.down_rate.per_second, self.up_rate.per_second, self.frame_ms);
         glow.present();
     }
 }

@@ -16,6 +16,7 @@ mod draw;
 mod effects;
 mod hud;
 mod join;
+mod lights;
 mod local;
 mod menu;
 mod net;

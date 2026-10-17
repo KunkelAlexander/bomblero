@@ -86,6 +86,9 @@ pub enum Event {
     Shot { player: u8, weapon: u8, pos: Vec2 },
     Beam { from: Vec2, to: Vec2 },
     Explosion { pos: Vec2, radius: f32 },
+    /// A Bomberman blast: a plus shape centred on `pos`. `arms` are the lengths
+    /// (px) to the right, down, left and up; a wall or brick cuts an arm short.
+    Cross { pos: Vec2, arms: [f32; 4] },
     Hit { victim: u8, pos: Vec2, damage: f32 },
     /// A brick got damaged or destroyed. This doubles as the "dirty flag" of
     /// the terrain: online, only these changes need to be sent, never the
@@ -231,20 +234,30 @@ impl World {
             w.reload = def.reload; // auto-reload as soon as the magazine empties
         }
 
-        let angle = aim + self.rng.range(-def.spread, def.spread);
-        let dir = vec2(angle.cos(), angle.sin());
-        let muzzle = pos + dir * (PLAYER_RADIUS + 4.0);
+        let dir = vec2(aim.cos(), aim.sin());
+        // A weapon with no speed (the bomb) is dropped at your feet, not thrown.
+        let muzzle = if def.kind == Kind::Projectile && def.speed == 0.0 { pos } else { pos + dir * (PLAYER_RADIUS + 4.0) };
         self.events.push(Event::Shot { player: i as u8, weapon: id, pos: muzzle });
 
         match def.kind {
-            Kind::Projectile => self.projectiles.push(Projectile {
-                pos: muzzle,
-                vel: dir * def.speed,
-                weapon: id,
-                owner: i as u8,
-                life: def.lifetime,
-            }),
-            Kind::Beam => self.fire_beam(i, def, muzzle, dir),
+            // A shotgun is one shot that makes several projectiles, each with
+            // its own random error: the spread is what makes it a shotgun.
+            Kind::Projectile => {
+                for _ in 0..def.pellets {
+                    let angle = aim + self.rng.range(-def.spread, def.spread);
+                    self.projectiles.push(Projectile {
+                        pos: muzzle,
+                        vel: vec2(angle.cos(), angle.sin()) * def.speed,
+                        weapon: id,
+                        owner: i as u8,
+                        life: def.lifetime,
+                    });
+                }
+            }
+            Kind::Beam => {
+                let angle = aim + self.rng.range(-def.spread, def.spread);
+                self.fire_beam(i, def, muzzle, vec2(angle.cos(), angle.sin()));
+            }
         }
     }
 
@@ -365,13 +378,34 @@ impl World {
             // Move in sub-steps of at most 8 px so a fast bolt cannot jump
             // over a thin wall or a player between two ticks ("tunnelling").
             let n = ((pr.vel.length() * DT) / 8.0).ceil().max(1.0) as i32;
-            let step = pr.vel * DT / n as f32;
-            let dir = pr.vel.normalize_or_zero();
+            let mut step = pr.vel * DT / n as f32;
+            let mut dir = pr.vel.normalize_or_zero();
             for _ in 0..n {
                 pr.pos += step;
 
                 let (tx, ty) = tile_coords(pr.pos);
                 if self.map.get(tx, ty).blocks() {
+                    if def.bounce {
+                        // Ricochet: undo the step, then find which wall face we
+                        // hit by trying each axis on its own, and mirror that
+                        // part of the velocity.
+                        pr.pos -= step;
+                        let hit_x = self.map.tile_at(pr.pos + vec2(step.x, 0.0)).blocks();
+                        let hit_y = self.map.tile_at(pr.pos + vec2(0.0, step.y)).blocks();
+                        // Neither axis alone is blocked: we came at a corner,
+                        // so bounce straight back.
+                        let corner = !hit_x && !hit_y;
+                        if hit_x || corner {
+                            pr.vel.x = -pr.vel.x;
+                            step.x = -step.x;
+                        }
+                        if hit_y || corner {
+                            pr.vel.y = -pr.vel.y;
+                            step.y = -step.y;
+                        }
+                        dir = pr.vel.normalize_or_zero();
+                        continue;
+                    }
                     self.impact(&pr, def, dir, None, Some((tx, ty)));
                     continue 'next;
                 }
@@ -417,6 +451,10 @@ impl World {
     /// brick does not shield you); that keeps the rule simple and can be
     /// revisited if it plays badly.
     fn explode(&mut self, pos: Vec2, def: &WeaponDef, owner: usize) {
+        if def.cross {
+            self.explode_cross(pos, def, owner);
+            return;
+        }
         self.events.push(Event::Explosion { pos, radius: def.blast_radius });
 
         for v in 0..self.players.len() {
@@ -444,6 +482,49 @@ impl World {
         }
     }
 
+    /// The Bomberman blast: the bomb's own tile plus up to `blast_radius / TILE`
+    /// tiles in each of the four directions. Unlike the round blast, walls
+    /// matter here: a solid wall stops an arm, and a brick takes the hit and
+    /// stops it too. That is what makes the plus shape something to play around.
+    fn explode_cross(&mut self, pos: Vec2, def: &WeaponDef, owner: usize) {
+        let (cx, cy) = tile_coords(pos);
+        let reach = (def.blast_radius / TILE).round() as i32;
+        let mut cells = vec![(cx, cy)];
+        let mut arms = [TILE / 2.0; 4]; // from the middle of the bomb's tile
+        for (arm, (dx, dy)) in [(1, 0), (0, 1), (-1, 0), (0, -1)].into_iter().enumerate() {
+            for k in 1..=reach {
+                let (tx, ty) = (cx + dx * k, cy + dy * k);
+                match self.map.get(tx, ty) {
+                    Tile::Solid => break,
+                    Tile::Brick(_) => {
+                        self.hurt_tile(tx, ty, def.tile_damage);
+                        arms[arm] += TILE;
+                        break;
+                    }
+                    Tile::Empty => {
+                        cells.push((tx, ty));
+                        arms[arm] += TILE;
+                    }
+                }
+            }
+        }
+        let centre = tile_center(cx, cy);
+        self.events.push(Event::Cross { pos: centre, arms });
+
+        for v in 0..self.players.len() {
+            let p = self.players[v].pos;
+            // Does the player's circle touch any covered tile?
+            let hit = cells.iter().any(|&(tx, ty)| {
+                let min = vec2(tx as f32 * TILE, ty as f32 * TILE);
+                p.clamp(min, min + Vec2::splat(TILE)).distance(p) < PLAYER_RADIUS
+            });
+            if hit && self.players[v].alive {
+                let impulse = (p - centre).normalize_or_zero() * def.knockback;
+                self.damage_player(v, def.blast_damage, owner, impulse);
+            }
+        }
+    }
+
     fn hurt_tile(&mut self, tx: i32, ty: i32, amount: u8) {
         if let Some(tile) = self.map.damage(tx, ty, amount) {
             self.events.push(Event::TileChanged { x: tx, y: ty, tile });
@@ -466,7 +547,7 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 mod tests {
     use super::*;
     use crate::tilemap::MAP_GRID;
-    use crate::weapons::{BLASTER, RAILGUN, ROCKET};
+    use crate::weapons::{BLASTER, BOMB, BOUNCER, LOADOUT, RAILGUN, ROCKET, SCATTER};
 
     // These tests need no window, GPU or sound: the payoff of keeping the sim
     // free of rendering code.
@@ -555,6 +636,63 @@ mod tests {
             w.step(&[Input { weapon: 2, ..Default::default() }]);
         }
         assert_eq!(w.players[0].weapons[2].ammo, 1);
+    }
+
+    /// Two players in the Grid map's top-left corner with every weapon, and the
+    /// slot number of `weapon` in that loadout.
+    fn armed_world(weapon: u8) -> (World, u8) {
+        let mut w = World::new(Tilemap::from_ascii(MAP_GRID), 2, &LOADOUT, 1);
+        w.players[0].pos = tile_center(1, 1);
+        w.players[1].pos = tile_center(3, 1);
+        (w, LOADOUT.iter().position(|&id| id == weapon).unwrap() as u8)
+    }
+
+    #[test]
+    fn scatter_fires_a_spread_of_pellets() {
+        let (mut w, slot) = armed_world(SCATTER);
+        w.step(&[Input { fire: true, weapon: slot, ..Default::default() }]);
+        assert_eq!(w.projectiles.len(), 8);
+        for _ in 0..30 {
+            w.step(&[]);
+        }
+        // At 64 px nearly every pellet lands: far more than one blaster bolt.
+        assert!(w.players[1].hp <= MAX_HP - 3.0 * 9.0, "hp = {}", w.players[1].hp);
+    }
+
+    #[test]
+    fn bouncer_ricochets_off_a_wall() {
+        let (mut w, slot) = armed_world(BOUNCER);
+        w.players[1].pos = tile_center(30, 10);
+        // Fire left, straight into the border wall two tiles away.
+        w.step(&[Input { fire: true, weapon: slot, aim: std::f32::consts::PI, ..Default::default() }]);
+        for _ in 0..10 {
+            w.step(&[]);
+        }
+        assert_eq!(w.projectiles.len(), 1, "it must survive the wall");
+        assert!(w.projectiles[0].vel.x > 0.0, "and now fly back the other way");
+    }
+
+    #[test]
+    fn bomb_blast_is_a_plus_that_walls_cut_short() {
+        let (mut w, slot) = armed_world(BOMB);
+        w.drain_events();
+        w.step(&[Input { fire: true, weapon: slot, ..Default::default() }]);
+        // Dropped at the owner's feet, not thrown.
+        assert_eq!(w.projectiles[0].pos, tile_center(1, 1));
+        for _ in 0..120 {
+            w.step(&[]);
+        }
+        assert!(w.projectiles.is_empty(), "the fuse ran out");
+        assert!(w.players[1].hp < MAX_HP, "tile (3,1) is on the right arm");
+        assert!(w.players[0].hp < MAX_HP, "so is the one who dropped it");
+        assert_eq!(w.map.get(4, 1), Tile::Empty, "the brick at the end of the arm is destroyed");
+        let arms = w.drain_events().into_iter().find_map(|e| match e {
+            Event::Cross { arms, .. } => Some(arms),
+            _ => None,
+        });
+        // Right: two empty tiles and a brick. Left and up: a wall right away.
+        // Down: three empty tiles.
+        assert_eq!(arms, Some([112.0, 112.0, 16.0, 16.0]));
     }
 
     #[test]

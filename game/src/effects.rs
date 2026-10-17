@@ -15,14 +15,15 @@
 //     sparks when they are hit, their death burst) is in their colour.
 //   * ORANGE-WHITE means "danger": rockets and explosions, for everybody.
 //   * Light is the only thing that glows, and it falls on the stone: coloured
-//     pools of light under players and projectiles.
+//     light around players, projectiles and explosions (lights.rs).
 
 use std::collections::HashMap;
 
 use macroquad::prelude::*;
 use sim::{Event, Tile};
 
-use crate::draw::{light_pool, player_color, DANGER};
+use crate::draw::{player_color, DANGER};
+use crate::lights::Light;
 use crate::terrain;
 
 struct Beam {
@@ -30,6 +31,8 @@ struct Beam {
     to: Vec2,
     age: f32,
     color: Color,
+    /// Thickness at the start; it fades with age.
+    width: f32,
 }
 
 /// A hexagonal shockwave (the game's "energy" shape), optionally lighting the
@@ -89,11 +92,21 @@ impl Effects {
             }
             Event::Beam { from, to } => {
                 let color = player_color(self.last_shooter as usize);
-                self.beams.push(Beam { from, to, age: 0.0, color });
+                self.beams.push(Beam { from, to, age: 0.0, color, width: 5.0 });
             }
             Event::Explosion { pos, radius } => {
                 self.ring(pos, radius, 0.4, DANGER, 0.6);
                 self.burst(pos, 14, 120.0..300.0, DANGER);
+            }
+            Event::Cross { pos, arms } => {
+                // The plus is four fat beams, one per arm, so it is exactly as
+                // long as the walls let the blast be.
+                for (arm, dir) in [vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0), vec2(0.0, -1.0)].into_iter().enumerate() {
+                    self.beams.push(Beam { from: pos, to: pos + dir * arms[arm], age: 0.0, color: DANGER, width: 22.0 });
+                    self.burst(pos + dir * arms[arm] * 0.5, 4, 40.0..140.0, DANGER);
+                }
+                self.ring(pos, 40.0, 0.4, DANGER, 0.9);
+                self.burst(pos, 10, 100.0..260.0, DANGER);
             }
             Event::Hit { victim, pos, .. } => {
                 self.ring(pos, 20.0, 0.2, WHITE, 0.0);
@@ -169,6 +182,14 @@ impl Effects {
         self.rings.retain(|r| r.age < r.life);
     }
 
+    /// Flashes of light cast by explosions and deaths (see lights.rs).
+    pub fn lights(&self, out: &mut Vec<Light>) {
+        for r in self.rings.iter().filter(|r| r.light > 0.0) {
+            let k = r.age / r.life;
+            out.push(Light { pos: r.pos, radius: r.max_radius * 2.2, color: r.color, strength: r.light * 1.5 * (1.0 - k) });
+        }
+    }
+
     pub fn draw(&self) {
         for sh in &self.shards {
             let k = sh.age / SHARD_LIFE;
@@ -183,16 +204,13 @@ impl Effects {
         for b in &self.beams {
             let fade = 1.0 - b.age / BEAM_LIFE;
             let c = Color::new(b.color.r, b.color.g, b.color.b, fade);
-            draw_line(b.from.x, b.from.y, b.to.x, b.to.y, 1.0 + 5.0 * fade, c);
+            draw_line(b.from.x, b.from.y, b.to.x, b.to.y, 1.0 + b.width * fade, c);
             draw_line(b.from.x, b.from.y, b.to.x, b.to.y, 1.5, Color::new(1.0, 1.0, 1.0, fade));
         }
         for r in &self.rings {
             let k = r.age / r.life;
             // Ease-out so the ring snaps outward and then slows.
             let radius = r.max_radius * (1.0 - (1.0 - k) * (1.0 - k));
-            if r.light > 0.0 {
-                light_pool(r.pos, r.max_radius * 1.6, r.color, r.light * (1.0 - k));
-            }
             draw_poly_lines(r.pos.x, r.pos.y, 6, radius, 0.0, 3.0, Color::new(r.color.r, r.color.g, r.color.b, 1.0 - k));
         }
         for s in &self.sparks {

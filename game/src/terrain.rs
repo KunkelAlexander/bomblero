@@ -20,8 +20,14 @@ use macroquad::prelude::*;
 use sim::tilemap::Tilemap;
 use sim::{Tile, MAP_H, MAP_W, TILE};
 
+use crate::lights::LIFT;
+
 const W: usize = MAP_W * TILE as usize;
 const H: usize = MAP_H * TILE as usize;
+
+/// Everything here is painted `LIFT` times brighter than it should look unlit,
+/// because the lightmap multiplies it back down (see lights.rs).
+const FLOOR: Color = Color::new(0.14, 0.14, 0.16, 1.0);
 
 /// Blur radius in pixels for the fused walls. This is also the corner rounding.
 const BLUR: usize = 5;
@@ -43,6 +49,9 @@ impl Terrain {
     }
 
     pub fn draw(&self, map: &Tilemap) {
+        // The floor is painted a lit grey and the lightmap darkens it (lights.rs):
+        // a black floor would stay black under any light.
+        draw_rectangle(0.0, 0.0, W as f32, H as f32, FLOOR);
         if let Some(walls) = &self.walls {
             draw_texture(walls, 0.0, 0.0, WHITE);
         }
@@ -88,7 +97,7 @@ fn bake_walls(solid: &[bool]) -> Texture2D {
             let slope = (at(1, 0) - at(-1, 0)) + (at(0, 1) - at(0, -1));
             let inside = ((h - 0.5) * 7.0 + 0.5).clamp(0.0, 1.0); // ~1 px soft edge
             let rim = if h > 0.5 && h < 0.62 { 0.04 } else { 0.0 }; // thin lit edge
-            let grey = (0.07 + slope * 0.9 + rim).clamp(0.02, 0.26);
+            let grey = ((0.07 + slope * 0.9 + rim) * LIFT).clamp(0.03, 0.5);
 
             let i = (y * W + x) * 4;
             if inside > 0.0 {
@@ -97,7 +106,7 @@ fn bake_walls(solid: &[bool]) -> Texture2D {
             } else if x % TILE as usize == 16 && y % TILE as usize == 16 {
                 // A faint dot at the centre of each floor tile, so you can still
                 // count tiles for Bomberman-style trapping without a noisy grid.
-                bytes[i..i + 4].copy_from_slice(&[70, 70, 78, 110]);
+                bytes[i..i + 4].copy_from_slice(&[80, 80, 90, 150]);
             }
         }
     }
@@ -191,7 +200,8 @@ fn draw_pebble(tx: i32, ty: i32, hp: u8) {
     let p = pebble(tx, ty);
     let c = vec2(tx as f32 + 0.5, ty as f32 + 0.5) * TILE;
     for k in 0..(hp as usize).min(FACETS) {
-        let color = wedge_color(&p, k);
+        let w = wedge_color(&p, k);
+        let color = Color::new(w.r * LIFT, w.g * LIFT, w.b * LIFT, 1.0);
         for i in k * PER_FACET..(k + 1) * PER_FACET {
             draw_triangle(c, c + p.points[i], c + p.points[i + 1], color);
         }
