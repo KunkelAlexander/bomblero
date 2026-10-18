@@ -28,9 +28,23 @@ pub const HEIGHT: f32 = 768.0;
 /// The map sits this far below the top of the picture.
 const TOP_MARGIN: f32 = 8.0;
 
-/// The smallest a 32 px tile may look on the real screen. Below this we zoom
-/// in and follow the player instead of showing more of the arena.
-const MIN_TILE_PX: f32 = 24.0;
+/// The smallest a 32 px tile may look on the real screen (in CSS pixels on the
+/// web). Below this we zoom in and follow the player instead of showing more of
+/// the arena. Size on the eye is what counts: a monitor is ~60 cm away, a phone
+/// ~30 cm, so 24 on a phone already looks like 32 on a monitor. But a phone
+/// shooter needs more than "readable": small bullets must be spotted at a
+/// glance next to your thumbs, so phones get bigger tiles and see less arena
+/// (the look-ahead below wins some of it back). Tune these two to taste.
+const MIN_TILE_PX_DESKTOP: f32 = 24.0;
+const MIN_TILE_PX_PHONE: f32 = 32.0;
+
+/// How far the camera leads towards where you aim, as a fraction of the visible
+/// arena. Zooming in costs awareness, and the direction you shoot in is where
+/// awareness matters, so the view shifts that way ("look-ahead camera").
+const LOOK_AHEAD: f32 = 0.25;
+/// How quickly the look-ahead follows a new aim, per second. Smoothed so
+/// flicking the aim around does not whip the whole view.
+const LOOK_SPEED: f32 = 4.0;
 
 /// The map's size in world pixels (40x22 tiles of 32 px).
 const MAP_SIZE: Vec2 = vec2(1280.0, 704.0);
@@ -71,6 +85,8 @@ thread_local! {
     // *saw*. Thread-locals instead of `Glow` fields so input code can reach them.
     static VIEW: Cell<Option<Rect>> = Cell::new(None);
     static SHOWN: Cell<Rect> = Cell::new(Rect::new(0.0, -TOP_MARGIN, WIDTH, HEIGHT));
+    // The current (smoothed) look-ahead offset, in world pixels.
+    static LOOK: Cell<Vec2> = Cell::new(Vec2::ZERO);
 }
 
 /// Screens that do not follow a player (connecting) draw a classic 1280x768
@@ -85,14 +101,29 @@ fn default_view(l: &Layout) -> Rect {
 /// before `Glow::begin`.
 ///
 /// The arena gets the picture above the HUD. If the whole map fits there with
-/// tiles of at least `MIN_TILE_PX`, it is shown whole and centred; otherwise
-/// the camera zooms in, centres on the player and stops at the arena's edges.
-pub fn follow(pos: Vec2) {
+/// tiles of at least the minimum size, it is shown whole and centred;
+/// otherwise the camera zooms in, centres on the player (led a little towards
+/// `aim`) and stops at the arena's edges.
+pub fn follow(pos: Vec2, aim: f32) {
     let l = layout();
     let area = vec2(l.size.x, l.hud_top() - TOP_MARGIN);
     let fit = (area.x / MAP_SIZE.x).min(area.y / MAP_SIZE.y);
-    let zoom = fit.max(MIN_TILE_PX / (32.0 * l.ui));
+    let min_tile = if crate::touch::is_touch_device() { MIN_TILE_PX_PHONE } else { MIN_TILE_PX_DESKTOP };
+    let zoom = fit.max(min_tile / (32.0 * l.ui));
     let seen = area / zoom;
+
+    // Lead towards the aim, but only along an axis that scrolls: a map that
+    // fits stays still.
+    let scrolls = vec2((seen.x < MAP_SIZE.x) as u8 as f32, (seen.y < MAP_SIZE.y) as u8 as f32);
+    let target = vec2(aim.cos(), aim.sin()) * seen * LOOK_AHEAD * scrolls;
+    let blend = 1.0 - (-LOOK_SPEED * get_frame_time()).exp();
+    let look = LOOK.with(|l| {
+        let look = l.get() + (target - l.get()) * blend;
+        l.set(look);
+        look
+    });
+    let pos = pos + look;
+
     // Per axis: centre the map if it fits, else follow and clamp.
     let axis = |p: f32, seen: f32, map: f32| if seen >= map { (map - seen) / 2.0 } else { (p - seen / 2.0).clamp(0.0, map - seen) };
     let corner = vec2(axis(pos.x, seen.x, MAP_SIZE.x), axis(pos.y, seen.y, MAP_SIZE.y));

@@ -66,7 +66,8 @@ impl Presenter {
         self.effects.lights(&mut lights);
         lights.extend_from_slice(extra);
 
-        view::follow(replica.world.players[replica.me as usize].pos);
+        let me = &replica.world.players[replica.me as usize];
+        view::follow(me.pos, me.aim);
         glow.begin();
         self.terrain.draw(&replica.world.map, &lights);
         // Created on the first frame: it needs the graphics context.
