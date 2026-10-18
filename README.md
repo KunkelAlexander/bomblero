@@ -66,6 +66,9 @@ Early but playable. Done so far:
   checks every choice (five different weapons, accepted once) before it
   touches the match.
 * Simple bots, 100 HP, respawning, first to 15 kills.
+* Three maps and a match setup (map, 1-3 bots offline, first to 5/10/15/25):
+  **Grid**, **Anthill** (solid earth with rock layers: dig your own tunnels) and
+  **Pinball** (open, nothing breaks, bumpers and slingshots).
 * Plays on phones and tablets: twin-stick touch controls (left thumb moves,
   right thumb aims and fires, tap a weapon card to switch), an on-screen keypad
   for room codes, and a layout that adapts to any screen shape. Small screens

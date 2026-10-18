@@ -56,7 +56,7 @@ move with it.
 | client → host | `Input` | every sim tick the player is connected | ~25 bytes |
 | client → host | `Loadout` | once, right after the `Welcome` | 5 bytes. The host accepts only the first valid one: a second would refill your ammo |
 | client → host | `Ping` | once a second | tiny |
-| host → client | `Welcome` | once, when you join (and after a rematch) | the whole map, several KB |
+| host → client | `Welcome` | once, when you join (and after a rematch) | the match rules (map number, kills to win) and the whole terrain, several KB |
 | host → client | `Snapshot` | 30 per second | ~400 bytes |
 | host → client | `Pong`, `Full` | answers | tiny |
 
@@ -86,8 +86,9 @@ from that table, never from the message, so a client cannot pretend to be
 someone else. Inputs for a slot held by a bot are ignored.
 
 ### Late join and the `Welcome`
-A friend can arrive mid-match. The host answers with a `Welcome`: the full
-terrain, the current world and the slot you control. Afterwards snapshots carry
+A friend can arrive mid-match. The host answers with a `Welcome`: the match's
+rules (which map, how many kills win: the host chose them, so a joiner never
+does), the full terrain, the current world and the slot you control. Afterwards snapshots carry
 only what changes.
 
 ### Snapshots: state versus events

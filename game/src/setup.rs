@@ -217,6 +217,10 @@ impl Spots {
         let aspect = MAP_H as f32 / MAP_W as f32;
         let preview_h = ((card_w - 16.0) * aspect).min(bots_y - 16.0 - cards_top - text_h - 8.0).max(0.0);
         let cards_left = (size.x - 3.0 * card_w - 2.0 * CARD_GAP) / 2.0;
+        // On a tall screen the cards end well above the rows: move the rows up
+        // under them, so the options are not stranded at the bottom.
+        let bots_y = bots_y.min(cards_top + 8.0 + preview_h + text_h + 48.0);
+        let score_y = bots_y + row_h + 10.0;
         Spots { roomy, row_h, next_y, score_y, bots_y, options_x, cards_left, cards_top, card_w, preview_h }
     }
 
