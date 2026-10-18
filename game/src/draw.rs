@@ -131,6 +131,9 @@ fn draw_players(world: &World, t: f32) {
         let turn = p.aim.to_degrees();
         draw_poly(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, Color::new(c.r * 0.2, c.g * 0.2, c.b * 0.2, 1.0));
         draw_poly_lines(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, 2.5, c);
+        // A paler line down the middle of the outline makes it a lit neon
+        // tube, like the title: the glow around it stays in the player's colour.
+        draw_poly_lines(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, 1.0, Color::new(0.4 * c.r + 0.6, 0.4 * c.g + 0.6, 0.4 * c.b + 0.6, 1.0));
         draw_poly(p.pos.x, p.pos.y, 6, PLAYER_RADIUS * 0.6, turn, c);
         draw_circle(p.pos.x, p.pos.y, PLAYER_RADIUS * 0.25, WHITE);
         // A filled wedge past the body says which way you are facing.

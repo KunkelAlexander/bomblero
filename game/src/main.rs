@@ -177,6 +177,7 @@ async fn main() {
         }
 
         // Touch controls go on top of the finished picture, in screen pixels.
+        set_default_camera();
         if touch::active() {
             // Stick hints only where the sticks do something.
             let playing = match &screen {

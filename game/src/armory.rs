@@ -25,7 +25,9 @@ const KEYS: [KeyCode; 10] = [
 ];
 
 const TEXT: Color = Color::new(0.92, 0.93, 0.96, 1.0);
-const TEXT_DIM: Color = Color::new(0.45, 0.47, 0.52, 1.0);
+// Secondary text. At 0.6 it keeps WCAG's 4.5:1 contrast for small text
+// against the dark cards (0.45 was about 3:1: hard to read on a dim screen).
+const TEXT_DIM: Color = Color::new(0.6, 0.62, 0.67, 1.0);
 const CARD_BG: Color = Color::new(0.075, 0.08, 0.095, 1.0);
 
 const CARD_GAP: f32 = 10.0;
@@ -97,42 +99,53 @@ impl Armory {
 
     /// Returns whether the CLEAR and GO buttons were pressed.
     fn draw(&self, cards: &Cards, mouse: Vec2, ready: bool, glow: &Glow) -> (bool, bool) {
-        glow.begin();
-        // Laid out in picture coordinates, so it adapts to the screen's shape.
-        glow.overlay();
         let mine = player_color(0);
         let height = view::layout().size.y;
-        center_wide(&format!("CHOOSE YOUR {LOADOUT_SIZE} WEAPONS"), if cards.roomy() { 84.0 } else { 44.0 }, 44.0, TEXT);
-        if cards.roomy() {
-            center_wide("click a weapon or press its number (click a picked one to put it back). The order you pick is the order of keys 1-5.", 124.0, 22.0, TEXT_DIM);
-        }
 
+        // The neon layer: the heading, the frames of the picked cards and their
+        // hexagons glow. Laid out in picture coordinates, so it adapts to the
+        // screen's shape.
+        glow.begin();
+        glow.overlay();
+        // A sign: a pale tube in your colour, so the glow around it is
+        // coloured and the letters stay readable (see `DOWN_FRAGMENT`).
+        let sign = Color::new(0.55 + 0.45 * mine.r, 0.55 + 0.45 * mine.g, 0.55 + 0.45 * mine.b, 1.0);
+        center_wide(&format!("CHOOSE YOUR {LOADOUT_SIZE} WEAPONS"), if cards.roomy() { 84.0 } else { 44.0 }, 44.0, sign);
         for (i, &id) in ARSENAL.iter().enumerate() {
             let r = cards.rect(i);
             let slot = self.picked.iter().position(|&p| p == id);
             let hover = r.contains(mouse);
             draw_rectangle(r.x, r.y, r.w, r.h, if hover { Color::new(0.11, 0.12, 0.145, 1.0) } else { CARD_BG });
+            // Left: the key to press. Picked weapons show their slot instead,
+            // in a hexagon, the game's own shape.
+            let (cx, cy) = (r.x + 34.0, r.y + r.h / 2.0);
             if slot.is_some() {
                 // Your colour marks what is yours, as it does on the HUD.
                 draw_rectangle(r.x, r.y, r.w, r.h, Color::new(mine.r, mine.g, mine.b, 0.1));
                 draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, mine);
+                // Dark body, bright outline: a filled bright hexagon would glow
+                // and wash the number out.
+                draw_poly(cx, cy, 6, 20.0, 0.0, Color::new(mine.r * 0.2, mine.g * 0.2, mine.b * 0.2, 1.0));
+                draw_poly_lines(cx, cy, 6, 20.0, 0.0, 2.5, mine);
+            } else {
+                draw_poly_lines(cx, cy, 6, 20.0, 0.0, 1.5, TEXT_DIM);
             }
+        }
+        glow.present();
 
-            // Left: the key to press. Picked weapons show their slot instead,
-            // in a hexagon, the game's own shape.
+        // The crisp layer: everything that is read, on the finished picture.
+        glow.ui();
+        if cards.roomy() {
+            center_wide("click a weapon or press its number (click a picked one to put it back). The order you pick is the order of keys 1-5.", 124.0, 22.0, TEXT_DIM);
+        }
+        for (i, &id) in ARSENAL.iter().enumerate() {
+            let r = cards.rect(i);
+            let slot = self.picked.iter().position(|&p| p == id);
             let (cx, cy) = (r.x + 34.0, r.y + r.h / 2.0);
-            match slot {
-                Some(n) => {
-                    // Dark body, bright outline and number: a filled bright
-                    // hexagon would glow and wash the number out.
-                    draw_poly(cx, cy, 6, 20.0, 0.0, Color::new(mine.r * 0.2, mine.g * 0.2, mine.b * 0.2, 1.0));
-                    draw_poly_lines(cx, cy, 6, 20.0, 0.0, 2.5, mine);
-                    draw_text(&format!("{}", n + 1), cx - 5.0, cy + 8.0, 26.0, WHITE);
-                }
-                None => {
-                    draw_poly_lines(cx, cy, 6, 20.0, 0.0, 1.5, TEXT_DIM);
-                    draw_text(&format!("{}", (i + 1) % 10), cx - 4.0, cy + 6.0, 20.0, TEXT_DIM);
-                }
+            if let Some(n) = slot {
+                draw_text(&format!("{}", n + 1), cx - 5.0, cy + 8.0, 26.0, WHITE);
+            } else {
+                draw_text(&format!("{}", (i + 1) % 10), cx - 4.0, cy + 6.0, 20.0, TEXT_DIM);
             }
 
             let def = &WEAPONS[id as usize];
@@ -164,7 +177,6 @@ impl Armory {
         if cards.roomy() {
             center_wide("Enter: go     Backspace: clear     Esc: back to the menu", height - 36.0, 20.0, TEXT_DIM);
         }
-        glow.present();
         (clear, go)
     }
 }

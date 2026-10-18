@@ -6,7 +6,7 @@
 //   * It is drawn in picture coordinates (see view.rs), so it keeps its size
 //     on any screen. Narrow screens get a taller strip: weapons on the first
 //     row, scores (and on very narrow ones the status) on the rows below.
-//   * The glow shader is switched off below `Layout::hud_top` (see shaders.rs):
+//   * It is drawn after the glow, on the finished picture (see `Glow::ui`):
 //     glowing text is hard to read. Colour is kept for *ownership*: your colour
 //     outlines your weapon card and your score chip, and each player's hexagon
 //     on the scoreboard is their in-game colour.
@@ -28,7 +28,9 @@ const BAR_BG: Color = Color::new(0.045, 0.05, 0.06, 1.0);
 const CARD_BG: Color = Color::new(0.075, 0.08, 0.095, 1.0);
 const CARD_BG_SELECTED: Color = Color::new(0.12, 0.13, 0.155, 1.0);
 const TEXT: Color = Color::new(0.92, 0.93, 0.96, 1.0);
-const TEXT_DIM: Color = Color::new(0.45, 0.47, 0.52, 1.0);
+// Secondary text. At 0.6 it keeps WCAG's 4.5:1 contrast for small text
+// against the dark cards (0.45 was about 3:1: hard to read on a dim screen).
+const TEXT_DIM: Color = Color::new(0.6, 0.62, 0.67, 1.0);
 const BAR_H: f32 = 44.0;
 
 /// `down`/`up` are bytes per second on the wire; `banner` is a line of status

@@ -7,7 +7,9 @@ pub const VERTEX: &str = "#version 100
 attribute vec3 position;
 attribute vec2 texcoord;
 attribute vec4 color0;
-varying lowp vec2 uv;
+// mediump: lowp (8 bits on phones) cannot address single pixels of a
+// screen-sized texture, which the glow's taps rely on.
+varying mediump vec2 uv;
 varying lowp vec4 color;
 uniform mat4 Model;
 uniform mat4 Projection;
@@ -139,40 +141,81 @@ void main() {
 }
 ";
 
-// Cheap glow: average a ring of neighbouring pixels (a blur) and add it on top
-// of the sharp image. Bright thin lines bleed light into the dark around them,
-// which is the whole "neon" look. M3 replaces this with a proper two-pass
-// blur at lower resolution; for M0 it proves that custom shaders and render
-// targets work in the browser.
-pub const GLOW_FRAGMENT: &str = "#version 100
+// The glow ("bloom"), in three small steps. Real neon has a white-hot tube, a
+// tight bright glow around it and a faint halo that lights the air. A
+// blur of the bright parts gives exactly that, and because it is done on
+// smaller copies of the picture it is cheap: a half-size copy has a quarter
+// of the pixels, and each halving doubles how far one blur step reaches.
+//
+//   1. DOWN:    shrink the picture to half size, keeping only what is bright.
+//               Shrink that again for the wider level.
+//   2. BLUR:    blur each level, across and then down (see `BLUR_FRAGMENT`).
+//   3. COMBINE: the sharp picture plus every blurred level, added on top.
+//
+// Only what is drawn into the scene glows. Small text (the HUD, the armory's
+// cards) is drawn after this, on the finished picture, so it stays crisp
+// (see `Glow::ui`).
+
+// Step 1. Four bilinear taps, each between four pixels: an average of a 4x4
+// block, so thin lines shrink smoothly instead of flickering in and out.
+//
+// Bright-pass: only the part of a colour above `threshold` may glow. The grey
+// arena sits below it and stays crisp; players, bolts and explosions are above
+// it and bleed light. Neon works through selective brightness: if every tile
+// glows, nothing stands out. Subtracting per channel also keeps the glow
+// coloured: a pale cyan tube (0.5, 1.0, 1.0) glows pure cyan.
+pub const DOWN_FRAGMENT: &str = "#version 100
 precision mediump float;
 varying vec2 uv;
-varying vec4 color;
 uniform sampler2D Texture;
-uniform vec2 texel; // size of one pixel in uv units
-uniform float hud_edge; // uv.y below this is the HUD strip: no glow there
+uniform vec2 texel; // one pixel of the source, in uv units
+uniform float threshold;
 
-// Bright-pass: only the part of a pixel above a threshold may glow. The grey
-// arena sits below it and stays crisp; players, bolts and explosions are
-// above it and bleed light. Neon works through selective brightness: if every
-// tile glows, nothing stands out.
 vec3 bright(vec2 p) {
-    return max(texture2D(Texture, p).rgb - 0.55, 0.0) * 2.2;
+    return max(texture2D(Texture, p).rgb - threshold, 0.0);
 }
 
 void main() {
+    vec3 c = bright(uv + texel * vec2(-1.0, -1.0)) + bright(uv + texel * vec2(1.0, -1.0))
+           + bright(uv + texel * vec2(-1.0, 1.0)) + bright(uv + texel * vec2(1.0, 1.0));
+    gl_FragColor = vec4(c * 0.25 / (1.0 - threshold), 1.0);
+}
+";
+
+// Step 2. A Gaussian blur along one direction (`step` is one pixel across or
+// one pixel down). Blurring across and then down equals a full round blur at
+// a fraction of the cost, because the Gaussian is "separable". Nine pixels
+// are read with five taps: a tap between two pixels makes the GPU blend them,
+// and the offsets and weights are chosen so the blend is exactly the
+// Gaussian's.
+pub const BLUR_FRAGMENT: &str = "#version 100
+precision mediump float;
+varying vec2 uv;
+uniform sampler2D Texture;
+uniform vec2 step;
+
+void main() {
+    vec3 c = texture2D(Texture, uv).rgb * 0.2270270;
+    c += (texture2D(Texture, uv + step * 1.3846154).rgb + texture2D(Texture, uv - step * 1.3846154).rgb) * 0.3162162;
+    c += (texture2D(Texture, uv + step * 3.2307692).rgb + texture2D(Texture, uv - step * 3.2307692).rgb) * 0.0702703;
+    gl_FragColor = vec4(c, 1.0);
+}
+";
+
+// Step 3. Near is the tight glow that hugs a tube, far the wide halo. The
+// halo is a very faint, very smooth gradient, and 256 levels per channel show
+// as rings in it ("banding"); a tiny per-pixel noise ("dithering") hides them.
+pub const COMBINE_FRAGMENT: &str = "#version 100
+precision mediump float;
+varying vec2 uv;
+uniform sampler2D Texture;
+uniform sampler2D Near;
+uniform sampler2D Far;
+
+void main() {
     vec3 sharp = texture2D(Texture, uv).rgb;
-    vec3 glow = vec3(0.0);
-    // Two rings of 8 taps each: a near ring and a far ring.
-    for (int i = 0; i < 8; i++) {
-        float a = float(i) * 0.785398; // 45 degrees
-        vec2 dir = vec2(cos(a), sin(a));
-        glow += bright(uv + dir * texel * 4.0);
-        glow += bright(uv + dir * texel * 10.0) * 0.6;
-    }
-    glow /= 12.8;
-    // Glow makes small text fuzzy, so the HUD strip is drawn sharp.
-    float in_world = step(hud_edge, uv.y);
-    gl_FragColor = vec4(sharp + glow * 1.6 * in_world, 1.0);
+    vec3 glow = texture2D(Near, uv).rgb * 0.75 + texture2D(Far, uv).rgb * 0.55;
+    float noise = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+    gl_FragColor = vec4(sharp + glow + noise / 255.0, 1.0);
 }
 ";

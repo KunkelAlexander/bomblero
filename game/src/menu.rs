@@ -51,7 +51,9 @@ const STAND_RADIUS: f32 = 32.0;
 const DWELL: f32 = 0.8;
 
 const TEXT: Color = Color::new(0.85, 0.87, 0.92, 1.0);
-const TEXT_DIM: Color = Color::new(0.45, 0.47, 0.52, 1.0);
+// Secondary text. At 0.6 it keeps WCAG's 4.5:1 contrast for small text
+// against the dark cards (0.45 was about 3:1: hard to read on a dim screen).
+const TEXT_DIM: Color = Color::new(0.6, 0.62, 0.67, 1.0);
 const NEON: Color = Color::new(0.1, 1.0, 0.95, 1.0);
 
 pub struct Menu {
@@ -203,16 +205,18 @@ impl Menu {
         }
         hub.presenter.actors(&hub.game.replica.world);
 
-        let mut tap = None;
-        if let Some(code) = &self.typing {
-            glow.overlay();
-            tap = draw_code_entry(code).map(Tap::Key);
-        } else if crate::touch::active() {
-            glow.overlay();
-            tap = draw_pad_buttons().map(Tap::Pad);
-        }
         glow.present();
-        tap
+
+        // Buttons and the keypad are full of small text: they go on the
+        // finished picture, not through the glow.
+        glow.ui();
+        if let Some(code) = &self.typing {
+            draw_code_entry(code).map(Tap::Key)
+        } else if crate::touch::active() {
+            draw_pad_buttons().map(Tap::Pad)
+        } else {
+            None
+        }
     }
 }
 
@@ -282,7 +286,7 @@ enum Key {
 
 /// The code entry covers the arena: the code, then a keypad with every letter a
 /// room code can contain (so a phone needs no keyboard). Drawn in picture
-/// coordinates (after `Glow::overlay`). Returns the key tapped this frame.
+/// coordinates (after `Glow::ui`). Returns the key tapped this frame.
 fn draw_code_entry(code: &str) -> Option<Key> {
     let size = view::layout().size;
     draw_rectangle(0.0, 0.0, size.x, size.y, Color::new(0.03, 0.03, 0.04, 0.95));
@@ -346,16 +350,23 @@ fn draw_title() {
     for (i, c) in text.chars().enumerate() {
         // "BOMB" is danger-orange, like everything that explodes.
         let color = if i < 4 { DANGER } else { NEON };
-        for stroke in letter(c) {
-            for pair in stroke.windows(2) {
-                let (a, b) = (vec2(x + pair[0].0 * unit, 56.0 + pair[0].1 * unit), vec2(x + pair[1].0 * unit, 56.0 + pair[1].1 * unit));
-                draw_line(a.x, a.y, b.x, b.y, 6.0, color);
-                draw_line(a.x, a.y, b.x, b.y, 1.8, WHITE);
-            }
-            // Round the corners: a dot at each joint closes the gaps.
-            for p in stroke.iter() {
-                let at = vec2(x + p.0 * unit, 56.0 + p.1 * unit);
-                draw_circle(at.x, at.y, 3.0, color);
+        // A lit tube: the glass in its colour, and a core that is the same
+        // colour washed towards white (the gas glows hottest in the middle).
+        // A pure white core would look like a wire inside the tube.
+        let core = Color::new(0.35 * color.r + 0.65, 0.35 * color.g + 0.65, 0.35 * color.b + 0.65, 1.0);
+        for (width, tint) in [(6.0, color), (2.4, core)] {
+            for stroke in letter(c) {
+                let at = |p: &(f32, f32)| vec2(x + p.0 * unit, 56.0 + p.1 * unit);
+                for pair in stroke.windows(2) {
+                    let (a, b) = (at(&pair[0]), at(&pair[1]));
+                    draw_line(a.x, a.y, b.x, b.y, width, tint);
+                }
+                // A tube bends, it has no corners: a dot at each joint
+                // rounds it off.
+                for p in stroke.iter() {
+                    let p = at(p);
+                    draw_circle(p.x, p.y, width / 2.0, tint);
+                }
             }
         }
         x += advance(c) * unit;

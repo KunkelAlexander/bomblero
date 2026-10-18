@@ -35,7 +35,13 @@ pub const LIFT: f32 = 0.5 / 0.3;
 
 /// Lightmap level of the unlit arena. The multiply is 2x (see `apply`): at 0.3
 /// the stone looks as designed, lower is darker, higher is lighter.
-pub const AMBIENT: f32 = 0.14;
+///
+/// Why not darker: dark-theme guidelines (Material Design) put the darkest
+/// large surface at about #121212 (0.07), not black. Below that, a screen
+/// turned down or seen in daylight shows floor and walls as one black, and
+/// the eye tires from the hard jump to the bright neon. At 0.24 the unlit
+/// floor lands at about that level, and the lights still read as pools.
+pub const AMBIENT: f32 = 0.24;
 
 const MAP_PX: Vec2 = vec2(MAP_W as f32 * TILE, MAP_H as f32 * TILE);
 const DOWNSCALE: f32 = 4.0;

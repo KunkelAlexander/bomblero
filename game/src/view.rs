@@ -61,8 +61,7 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Where the HUD strip starts, in picture coordinates. Below this line the
-    /// glow shader is switched off, so text stays crisp.
+    /// Where the HUD strip starts, in picture coordinates.
     pub fn hud_top(&self) -> f32 {
         self.size.y - 54.0 - (self.hud_rows - 1) as f32 * 50.0
     }
@@ -144,43 +143,68 @@ pub fn screen_to_world(screen: Vec2) -> Vec2 {
     vec2(view.x, view.y) + screen / l.ui * (view.w / l.size.x)
 }
 
-/// The glow post-process: draw the scene into an offscreen texture, then draw
-/// that texture to the window through a blur shader.
+/// How bright a colour must be before it glows (see `DOWN_FRAGMENT`).
+const THRESHOLD: f32 = 0.6;
+
+/// The glow post-process ("bloom"): draw the scene into an offscreen texture,
+/// blur the bright parts of it at half, quarter and eighth size, and put the
+/// sum on the window. See the shaders in shaders.rs.
+///
+/// A frame has two layers:
+///   * the scene, between `begin` and `present`: the arena, and anything that
+///     should glow like a neon sign (the title, big labels);
+///   * the UI, after `present` and `ui`: drawn straight onto the finished
+///     picture, so small text is never blurred by the glow.
 pub struct Glow {
-    /// Sized like the picture, so recreated when the window changes size.
+    /// Sized like the window (real pixels, so lines stay sharp on a big
+    /// screen), so recreated when the window changes size.
     scene: RefCell<RenderTarget>,
-    material: Material,
+    /// One pair per glow level, each half the size of the one before: the
+    /// level itself and a scratch texture for the first half of its blur.
+    levels: RefCell<Vec<[RenderTarget; 2]>>,
+    down: Material,
+    blur: Material,
+    combine: Material,
 }
 
 impl Glow {
     pub fn new() -> Glow {
-        let material = load_material(
-            ShaderSource::Glsl { vertex: shaders::VERTEX, fragment: shaders::GLOW_FRAGMENT },
-            MaterialParams {
-                uniforms: vec![
-                    UniformDesc::new("texel", UniformType::Float2),
-                    UniformDesc::new("hud_edge", UniformType::Float1),
-                ],
-                ..Default::default()
-            },
-        )
-        .expect("glow shader failed to compile");
-        Glow { scene: RefCell::new(render_target(1, 1)), material }
+        let material = |fragment, uniforms: &[(&str, UniformType)], textures: &[&str]| {
+            load_material(
+                ShaderSource::Glsl { vertex: shaders::VERTEX, fragment },
+                MaterialParams {
+                    uniforms: uniforms.iter().map(|(name, kind)| UniformDesc::new(name, *kind)).collect(),
+                    textures: textures.iter().map(|t| t.to_string()).collect(),
+                    ..Default::default()
+                },
+            )
+            .expect("glow shader failed to compile")
+        };
+        Glow {
+            scene: RefCell::new(render_target(1, 1)),
+            levels: RefCell::new(Vec::new()),
+            down: material(shaders::DOWN_FRAGMENT, &[("texel", UniformType::Float2), ("threshold", UniformType::Float1)], &[]),
+            blur: material(shaders::BLUR_FRAGMENT, &[("step", UniformType::Float2)], &[]),
+            combine: material(shaders::COMBINE_FRAGMENT, &[], &["Near", "Mid", "Far"]),
+        }
     }
 
     /// Start drawing the scene. Afterwards, draw in world coordinates.
     pub fn begin(&self) {
-        let l = layout();
-        let (w, h) = (l.size.x.round() as u32, l.size.y.round() as u32);
+        let (w, h) = (screen_width().round().max(8.0) as u32, screen_height().round().max(8.0) as u32);
         if (self.scene.borrow().texture.width() as u32, self.scene.borrow().texture.height() as u32) != (w, h) {
-            let scene = render_target(w, h);
-            scene.texture.set_filter(FilterMode::Linear);
-            *self.scene.borrow_mut() = scene;
-            self.material.set_uniform("texel", vec2(1.0 / w as f32, 1.0 / h as f32));
+            let target = |w: u32, h: u32| {
+                let t = render_target(w.max(1), h.max(1));
+                t.texture.set_filter(FilterMode::Linear); // the blur's in-between taps need it
+                t
+            };
+            *self.scene.borrow_mut() = target(w, h);
+            let levels: Vec<[RenderTarget; 2]> = [2, 4, 8].iter().map(|d| [target(w / d, h / d), target(w / d, h / d)]).collect();
+            for (name, level) in ["Near", "Mid", "Far"].iter().zip(&levels) {
+                self.combine.set_texture(name, level[0].texture.clone());
+            }
+            *self.levels.borrow_mut() = levels;
         }
-        // As a fraction of the picture height measured from the bottom, which
-        // is how the shader sees `uv.y` (render targets are stored upside down).
-        self.material.set_uniform("hud_edge", (l.size.y - l.hud_top()) / l.size.y);
         self.resume();
         clear_background(BLACK);
     }
@@ -193,8 +217,7 @@ impl Glow {
     }
 
     /// Draw into the scene in picture coordinates, for things that sit on top
-    /// of the arena and must keep their size: the HUD, plates with text, the
-    /// armory.
+    /// of the arena, keep their size and should glow (the armory's title).
     pub fn overlay(&self) {
         let l = layout();
         self.camera(Rect::new(0.0, 0.0, l.size.x, l.size.y));
@@ -206,17 +229,35 @@ impl Glow {
         set_camera(&cam);
     }
 
-    /// Finish: put the scene on the window with the glow applied.
+    /// Finish the scene: put it on the window with the glow applied.
     pub fn present(&self) {
         // Remember what was shown (for the mouse) and drop the follow, so the
         // next screen starts with the default view unless it follows again.
         let shown = VIEW.with(|v| v.take()).unwrap_or_else(|| default_view(&layout()));
         SHOWN.with(|v| v.set(shown));
+
+        // Each level shrinks the one above it (the first shrinks the scene
+        // and keeps only its bright parts), then is blurred across and down.
+        let scene = self.scene.borrow();
+        let mut source = scene.texture.clone();
+        for (i, [level, scratch]) in self.levels.borrow().iter().enumerate() {
+            let texel = vec2(1.0 / source.width(), 1.0 / source.height());
+            self.down.set_uniform("texel", texel);
+            self.down.set_uniform("threshold", if i == 0 { THRESHOLD } else { 0.0 });
+            pass(&self.down, &source, level);
+            let (w, h) = (level.texture.width(), level.texture.height());
+            self.blur.set_uniform("step", vec2(1.0 / w, 0.0));
+            pass(&self.blur, &level.texture, scratch);
+            self.blur.set_uniform("step", vec2(0.0, 1.0 / h));
+            pass(&self.blur, &scratch.texture, level);
+            source = level.texture.clone();
+        }
+
         set_default_camera();
         clear_background(BLACK);
-        gl_use_material(&self.material);
+        gl_use_material(&self.combine);
         draw_texture_ex(
-            &self.scene.borrow().texture,
+            &scene.texture,
             0.0,
             0.0,
             WHITE,
@@ -229,4 +270,26 @@ impl Glow {
         );
         gl_use_default_material();
     }
+
+    /// After `present`: draw on the finished picture, in picture coordinates.
+    /// This is the crisp layer for small text (the HUD, the armory's cards).
+    pub fn ui(&self) {
+        let l = layout();
+        let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, l.size.x, l.size.y));
+        // macroquad flips y for the window but not for render targets; undo it
+        // so y grows downwards here too.
+        cam.zoom.y = -cam.zoom.y;
+        set_camera(&cam);
+    }
+}
+
+/// Draw `source` over all of `target` through `material`.
+fn pass(material: &Material, source: &Texture2D, target: &RenderTarget) {
+    let (w, h) = (target.texture.width(), target.texture.height());
+    let mut cam = Camera2D::from_display_rect(Rect::new(0.0, 0.0, w, h));
+    cam.render_target = Some(target.clone());
+    set_camera(&cam);
+    gl_use_material(material);
+    // Copying one render target into another keeps it upside down (see `present`).
+    draw_texture_ex(source, 0.0, 0.0, WHITE, DrawTextureParams { dest_size: Some(vec2(w, h)), flip_y: true, ..Default::default() });
 }

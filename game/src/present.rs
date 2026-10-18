@@ -6,7 +6,7 @@
 //   floor():   ground, bricks, lights      (lit: the lightmap darkens them)
 //   ...        anything the caller wants on the floor (the menu's pads and title)
 //   actors():  projectiles, players, effects (unlit: they make their own light)
-//   hud
+//   hud        (on the finished picture, after the glow: see `Glow::ui`)
 // `show` does all of it for a match; the menu calls the pieces itself.
 
 use macroquad::prelude::*;
@@ -41,9 +41,10 @@ impl Presenter {
 
         self.floor(replica, &[], glow);
         self.actors(&replica.world);
-        glow.overlay();
-        hud::draw(&replica.world, replica.me as usize, can_restart, banner, self.down_rate.per_second, self.up_rate.per_second, self.frame_ms);
         glow.present();
+        // The HUD goes on the finished picture: its text must stay crisp.
+        glow.ui();
+        hud::draw(&replica.world, replica.me as usize, can_restart, banner, self.down_rate.per_second, self.up_rate.per_second, self.frame_ms);
     }
 
     /// Start the frame and draw the lit ground. `extra` are lights that do not

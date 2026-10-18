@@ -167,10 +167,15 @@ fn bake(solid: &[bool]) -> (Texture2D, Texture2D) {
                 FLOOR.b * shade * (1.1 - 0.2 * warm) * (1.0 - moss),
             ];
 
-            // The wall: nearly black, with a faint cold bevel facing the
-            // top-left, so it still has a shape before any light reaches it.
-            let rim = if h > 0.5 && h < 0.62 { 0.03 } else { 0.0 };
-            let wall_grey = ((0.012 + slope.max(0.0) * 0.4 + rim) * LIFT).clamp(0.008, 0.3);
+            // The wall: nearly black, with a cold bevel facing the top-left
+            // and a thin pale rim all round, so it has a shape before any
+            // light reaches it. The rim does the work on a dim screen: two
+            // dark greys cannot differ much, so what tells wall from floor is
+            // a clearly lighter edge between them (the same idea as WCAG's
+            // rule that the outline of anything you must see has a 3:1
+            // contrast with what is next to it).
+            let rim = if h > 0.5 && h < 0.62 { 0.16 } else { 0.0 };
+            let wall_grey = ((0.03 + slope.max(0.0) * 0.6 + rim) * LIFT).clamp(0.02, 0.5);
             let wall = [wall_grey, wall_grey * 1.05, wall_grey * 1.25];
 
             // A faint dot at the centre of each floor tile, so you can still
@@ -289,7 +294,7 @@ fn pebble(tx: i32, ty: i32) -> Pebble {
         *point = vec2(a.cos(), a.sin()) * r * (0.93 + 0.07 * hash(tx, ty, 1 + i as i32));
     }
     points[OUTLINE] = points[0];
-    Pebble { points, grey: 0.15 + 0.05 * hash(tx, ty, 99), turn }
+    Pebble { points, grey: 0.25 + 0.06 * hash(tx, ty, 99), turn }
 }
 
 /// Angle at the middle of wedge `k`.
