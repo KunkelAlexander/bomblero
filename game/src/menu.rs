@@ -12,13 +12,13 @@
 // The old keys still work (P, H, J) for anyone who just wants to get going.
 
 use macroquad::prelude::*;
-use protocol::relay::CODE_LEN;
+use protocol::relay::{CODE_ALPHABET, CODE_LEN};
 use sim::Input;
 
 use crate::controls::Controls;
-use crate::draw::{center_text, player_color, DANGER};
+use crate::draw::{button, center_text, center_wide, player_color, DANGER};
 use crate::lights::Light;
-use crate::view::Glow;
+use crate::view::{self, Glow};
 use crate::HostGame;
 
 pub enum Choice {
@@ -84,8 +84,11 @@ impl Menu {
         self.hub.advance(input);
 
         let choice = if self.typing.is_some() { self.type_code() } else { self.walk(me) };
-        self.draw(me, glow);
-        choice
+        // The on-screen keypad reports its key while drawing (see `button`).
+        match self.draw(me, glow) {
+            Some(key) => choice.or_else(|| self.press(key)),
+            None => choice,
+        }
     }
 
     fn walk(&mut self, me: usize) -> Option<Choice> {
@@ -134,25 +137,41 @@ impl Menu {
         }
     }
 
+    /// The physical keyboard, turned into the same keys the keypad sends.
     fn type_code(&mut self) -> Option<Choice> {
-        let code = self.typing.as_mut()?;
+        let mut choice = None;
         while let Some(c) = get_char_pressed() {
-            if c.is_ascii_alphanumeric() && code.len() < CODE_LEN {
-                code.push(c.to_ascii_uppercase());
+            if c.is_ascii_alphanumeric() {
+                choice = choice.or(self.press(Key::Char(c.to_ascii_uppercase())));
             }
         }
         if is_key_pressed(KeyCode::Backspace) {
-            code.pop();
+            self.press(Key::Delete);
         }
         if is_key_pressed(KeyCode::Escape) {
-            self.typing = None;
-        } else if is_key_pressed(KeyCode::Enter) && code.len() == CODE_LEN {
-            return Some(Choice::Join(code.clone()));
+            self.press(Key::Back);
+        } else if is_key_pressed(KeyCode::Enter) {
+            choice = choice.or(self.press(Key::Join));
+        }
+        choice
+    }
+
+    fn press(&mut self, key: Key) -> Option<Choice> {
+        let code = self.typing.as_mut()?;
+        match key {
+            Key::Char(c) if code.len() < CODE_LEN => code.push(c),
+            Key::Char(_) => {}
+            Key::Delete => {
+                code.pop();
+            }
+            Key::Back => self.typing = None,
+            Key::Join if code.len() == CODE_LEN => return Some(Choice::Join(code.clone())),
+            Key::Join => {}
         }
         None
     }
 
-    fn draw(&mut self, me: usize, glow: &Glow) {
+    fn draw(&mut self, me: usize, glow: &Glow) -> Option<Key> {
         // The pads light their alcoves a little, so you can see where to go.
         let lights: Vec<Light> = PADS.iter().map(|p| Light { pos: p.pos, radius: 120.0, color: Color::new(0.7, 0.85, 1.0, 1.0), strength: 0.45 }).collect();
 
@@ -160,7 +179,11 @@ impl Menu {
         hub.presenter.floor(&mut hub.game.replica, &lights, glow);
         // Signs painted on the floor, under the player and their shots.
         draw_title();
-        center_text("WASD move    mouse aim    click fire    1-0 weapons", 336.0, 26.0, TEXT_DIM);
+        if crate::touch::active() {
+            center_text("left thumb: move    right thumb: aim and fire    tap a card: weapon", 336.0, 26.0, TEXT_DIM);
+        } else {
+            center_text("WASD move    mouse aim    click fire    1-0 weapons", 336.0, 26.0, TEXT_DIM);
+        }
         center_text("walk onto a hexagon and stay to choose", 366.0, 26.0, TEXT_DIM);
         for (i, pad) in PADS.iter().enumerate() {
             let progress = if self.on == Some(i) { self.dwell / DWELL } else { 0.0 };
@@ -168,10 +191,13 @@ impl Menu {
         }
         hub.presenter.actors(&hub.game.replica.world);
 
+        let mut key = None;
         if let Some(code) = &self.typing {
-            draw_code_entry(code);
+            glow.overlay();
+            key = draw_code_entry(code);
         }
         glow.present();
+        key
     }
 }
 
@@ -207,12 +233,49 @@ fn center_at(text: &str, x: f32, y: f32, size: f32, color: Color) {
     draw_text(text, x - width / 2.0, y, size, color);
 }
 
-/// The code entry sits on a plate over the arena, like the match messages.
-fn draw_code_entry(code: &str) {
-    draw_rectangle(0.0, 180.0, 1280.0, 240.0, Color::new(0.03, 0.03, 0.04, 1.0));
-    center_text("type the room code", 240.0, 26.0, TEXT_DIM);
-    center_text(&format!("{:_<width$}", code, width = CODE_LEN), 330.0, 78.0, TEXT);
-    center_text("Enter: join     Esc: back", 390.0, 26.0, TEXT_DIM);
+/// A key of the code entry, from the keyboard or the on-screen keypad.
+#[derive(Clone, Copy)]
+enum Key {
+    Char(char),
+    Delete,
+    Back,
+    Join,
+}
+
+/// The code entry covers the arena: the code, then a keypad with every letter a
+/// room code can contain (so a phone needs no keyboard). Drawn in picture
+/// coordinates (after `Glow::overlay`). Returns the key tapped this frame.
+fn draw_code_entry(code: &str) -> Option<Key> {
+    let size = view::layout().size;
+    draw_rectangle(0.0, 0.0, size.x, size.y, Color::new(0.03, 0.03, 0.04, 0.95));
+    center_wide("type or tap the room code", 34.0, 26.0, TEXT_DIM);
+    center_wide(&format!("{:_<width$}", code, width = CODE_LEN), 96.0, 64.0, TEXT);
+
+    // 8 columns x 4 rows of letters, then a row of BACK / DEL / JOIN. Keys are
+    // as big as fit, up to 52 px.
+    const COLS: usize = 8;
+    let key = ((size.x - 24.0) / COLS as f32 - 8.0).min((size.y - 130.0) / 5.0 - 8.0).min(52.0);
+    let step = key + 8.0;
+    let left = (size.x - (COLS as f32 * step - 8.0)) / 2.0;
+    let top = 120.0;
+    let mut pressed = None;
+    for (i, c) in CODE_ALPHABET.chars().enumerate() {
+        let r = Rect::new(left + (i % COLS) as f32 * step, top + (i / COLS) as f32 * step, key, key);
+        if button(r, &c.to_string(), code.len() < CODE_LEN, TEXT) {
+            pressed = Some(Key::Char(c));
+        }
+    }
+    let rows = CODE_ALPHABET.len().div_ceil(COLS) as f32;
+    let y = top + rows * step;
+    let third = (COLS as f32 * step - 8.0 - 16.0) / 3.0;
+    let actions = [("BACK", Key::Back, true), ("DEL", Key::Delete, !code.is_empty()), ("JOIN", Key::Join, code.len() == CODE_LEN)];
+    for (i, (label, k, enabled)) in actions.into_iter().enumerate() {
+        let r = Rect::new(left + i as f32 * (third + 8.0), y, third, key);
+        if button(r, label, enabled, if i == 2 { NEON } else { TEXT }) {
+            pressed = Some(k);
+        }
+    }
+    pressed
 }
 
 // The title is drawn with strokes, not text: the built-in font is a small pixel

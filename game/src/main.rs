@@ -26,6 +26,7 @@ mod share;
 mod shaders;
 mod socket;
 mod terrain;
+mod touch;
 mod view;
 
 use armory::Armory;
@@ -42,7 +43,7 @@ fn window_conf() -> Conf {
         window_title: "Bomblero".to_owned(),
         window_width: view::WIDTH as i32,
         window_height: view::HEIGHT as i32,
-        window_resizable: false,
+        window_resizable: true,
         ..Default::default()
     }
 }
@@ -114,7 +115,9 @@ impl HostGame {
     }
 
     fn frame(&mut self, controls: &mut Controls, glow: &view::Glow) {
-        if is_key_pressed(KeyCode::R) {
+        // On a touchscreen, a tap after the match is over stands in for R.
+        let tapped = touch::active() && self.game.replica.world.winner.is_some() && is_mouse_button_pressed(MouseButton::Left);
+        if is_key_pressed(KeyCode::R) || tapped {
             self.game.restart(new_seed());
         }
 
@@ -143,7 +146,8 @@ async fn main() {
     loop {
         // Esc leaves any screen for the menu (the menu itself uses Esc to
         // back out of typing a code). Dropping a screen closes its socket.
-        if is_key_pressed(KeyCode::Escape) && !matches!(screen, Screen::Menu(_)) {
+        controls.touch.update();
+        if (is_key_pressed(KeyCode::Escape) || touch::back_pressed()) && !matches!(screen, Screen::Menu(_)) {
             screen = Screen::Menu(Menu::new());
         }
 
@@ -170,6 +174,14 @@ async fn main() {
         }
         if let Some(next) = next {
             screen = next;
+        }
+
+        // Touch controls go on top of the finished picture, in screen pixels.
+        if touch::active() {
+            controls.touch.draw();
+            if !matches!(screen, Screen::Menu(_)) {
+                touch::draw_back_button();
+            }
         }
 
         next_frame().await;

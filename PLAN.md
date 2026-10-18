@@ -163,3 +163,8 @@ server/Dockerfile, render.yaml, fly.toml
 - `Share` pings the relay every 20 s: a host alone in a room would otherwise send nothing, and idle WebSockets get cut / free Render services sleep after 15 min without incoming messages (checked against Render's docs, Oct 2026).
 - Not verifiable here: the Docker build (no Docker installed; the exact cargo command inside it was run natively with `--locked` and LTO off and works) and the real deploy (needs a GitHub remote and a Render account: user actions).
 - Known limit: the native client has no TLS, so only the browser build can use a `wss://` relay.
+
+## Addendum (mobile)
+- The window is resizable and the picture takes the screen's shape (no letterbox). `view::Layout` divides it up: the HUD keeps a fixed size and stacks into 1-3 rows by width; the arena camera shows the whole map if tiles stay >= 24 px (`MIN_TILE_PX`), else zooms in and follows the local player. Different screens see different amounts of the arena (accepted; the camera is presentation only).
+- Touch: `game/src/touch.rs`, floating twin sticks (left moves, right aims and fires past 30 % push), HUD card taps switch weapons, a corner X stands in for Esc, a tap after a match stands in for R. Everything ends in the same `Input`, so sim/protocol/host are unchanged.
+- Buttons (room-code keypad, armory CLEAR/GO) are immediate-mode (`draw::button`) and work by mouse and by tap (macroquad turns taps into clicks).

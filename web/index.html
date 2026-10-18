@@ -3,13 +3,20 @@
 <head>
   <meta charset="utf-8">
   <title>Bomblero</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <!-- Fullscreen-ish when added to a phone's home screen. -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <link rel="icon" href="data:,">
   <style>
     html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-    /* The canvas fills the window; the game letterboxes its fixed 1280x720 view inside it. */
+    /* The canvas fills the window; the game lays itself out for its shape (see game/src/view.rs). */
+    /* touch-action/user-select: thumbs on the canvas are game input, so the
+       browser must not scroll, zoom or select text in response to them. */
     canvas { display: block; position: absolute; inset: 0;
-             width: 100%; height: 100%; outline: none; }
+             width: 100%; height: 100%; outline: none;
+             touch-action: none; user-select: none; -webkit-user-select: none;
+             -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
   </style>
 </head>
 <body>

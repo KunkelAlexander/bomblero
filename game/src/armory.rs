@@ -15,9 +15,9 @@ use sim::weapons::{
     ARSENAL, BLASTER, BOMB, BOUNCER, CLUSTER, LOADOUT_SIZE, NOVA, RAILGUN, ROCKET, SCATTER, SWARM, TELEPORT, WEAPONS,
 };
 
-use crate::draw::{center_text, player_color};
+use crate::draw::{button, center_wide, player_color};
 use crate::menu::Choice;
-use crate::view::{screen_to_world, Glow};
+use crate::view::{self, screen_to_picture, Glow};
 
 const KEYS: [KeyCode; 10] = [
     KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4, KeyCode::Key5,
@@ -28,8 +28,6 @@ const TEXT: Color = Color::new(0.92, 0.93, 0.96, 1.0);
 const TEXT_DIM: Color = Color::new(0.45, 0.47, 0.52, 1.0);
 const CARD_BG: Color = Color::new(0.075, 0.08, 0.095, 1.0);
 
-const CARD_W: f32 = 560.0;
-const CARD_H: f32 = 76.0;
 const CARD_GAP: f32 = 10.0;
 
 /// One line about each weapon, for the card. Client-only text, so it lives here
@@ -67,21 +65,22 @@ impl Armory {
 
     /// One frame. Returns what to play, and with which weapons, once chosen.
     pub fn frame(&mut self, glow: &Glow) -> Option<(Choice, Vec<u8>)> {
-        let mouse = screen_to_world(Vec2::from(mouse_position()));
+        let mouse = screen_to_picture(Vec2::from(mouse_position()));
         let clicked = is_mouse_button_pressed(MouseButton::Left);
+        let cards = Cards::new();
         for (i, &id) in ARSENAL.iter().enumerate() {
-            if is_key_pressed(KEYS[i]) || (clicked && card_rect(i).contains(mouse)) {
+            if is_key_pressed(KEYS[i]) || (clicked && cards.rect(i).contains(mouse)) {
                 self.toggle(id);
             }
         }
-        if is_key_pressed(KeyCode::Backspace) {
+        let ready = self.picked.len() == LOADOUT_SIZE;
+        // The buttons stand in for the keys on a touchscreen.
+        let (clear, go) = self.draw(&cards, mouse, ready, glow);
+        if is_key_pressed(KeyCode::Backspace) || clear {
             self.picked.clear();
         }
-        let ready = self.picked.len() == LOADOUT_SIZE;
 
-        self.draw(mouse, ready, glow);
-
-        if ready && is_key_pressed(KeyCode::Enter) {
+        if ready && (is_key_pressed(KeyCode::Enter) || go) {
             return Some((self.choice.take()?, self.picked.clone()));
         }
         None
@@ -96,14 +95,20 @@ impl Armory {
         }
     }
 
-    fn draw(&self, mouse: Vec2, ready: bool, glow: &Glow) {
+    /// Returns whether the CLEAR and GO buttons were pressed.
+    fn draw(&self, cards: &Cards, mouse: Vec2, ready: bool, glow: &Glow) -> (bool, bool) {
         glow.begin();
+        // Laid out in picture coordinates, so it adapts to the screen's shape.
+        glow.overlay();
         let mine = player_color(0);
-        center_text(&format!("CHOOSE YOUR {LOADOUT_SIZE} WEAPONS"), 84.0, 44.0, TEXT);
-        center_text("click a weapon or press its number (click a picked one to put it back). The order you pick is the order of keys 1-5.", 124.0, 22.0, TEXT_DIM);
+        let height = view::layout().size.y;
+        center_wide(&format!("CHOOSE YOUR {LOADOUT_SIZE} WEAPONS"), if cards.roomy() { 84.0 } else { 44.0 }, 44.0, TEXT);
+        if cards.roomy() {
+            center_wide("click a weapon or press its number (click a picked one to put it back). The order you pick is the order of keys 1-5.", 124.0, 22.0, TEXT_DIM);
+        }
 
         for (i, &id) in ARSENAL.iter().enumerate() {
-            let r = card_rect(i);
+            let r = cards.rect(i);
             let slot = self.picked.iter().position(|&p| p == id);
             let hover = r.contains(mouse);
             draw_rectangle(r.x, r.y, r.w, r.h, if hover { Color::new(0.11, 0.12, 0.145, 1.0) } else { CARD_BG });
@@ -132,29 +137,70 @@ impl Armory {
 
             let def = &WEAPONS[id as usize];
             let (name, detail) = if slot.is_some() { (TEXT, TEXT_DIM) } else { (Color::new(0.7, 0.72, 0.78, 1.0), TEXT_DIM) };
-            draw_text(def.name, r.x + 70.0, r.y + 31.0, 26.0, name);
-            draw_text(blurb(id), r.x + 70.0, r.y + 56.0, 18.0, detail);
-            let rounds = if def.mag == 1 { "round" } else { "rounds" };
-            let magazine = format!("{} {rounds}  reload {:.1}s", def.mag, def.reload);
-            let width = measure_text(&magazine, None, 16, 1.0).width;
-            draw_text(&magazine, r.x + r.w - 12.0 - width, r.y + 31.0, 16.0, TEXT_DIM);
+            // Small cards keep only the name; the details need room.
+            if r.h >= 64.0 {
+                draw_text(def.name, r.x + 70.0, r.y + 31.0, 26.0, name);
+                draw_text(blurb(id), r.x + 70.0, r.y + 56.0, 18.0, detail);
+            } else {
+                draw_text(def.name, r.x + 70.0, r.y + r.h / 2.0 + 9.0, 26.0, name);
+            }
+            if r.w >= 460.0 {
+                let rounds = if def.mag == 1 { "round" } else { "rounds" };
+                let magazine = format!("{} {rounds}  reload {:.1}s", def.mag, def.reload);
+                let width = measure_text(&magazine, None, 16, 1.0).width;
+                draw_text(&magazine, r.x + r.w - 12.0 - width, r.y + 31.0, 16.0, TEXT_DIM);
+            }
         }
 
-        if ready {
-            center_text("Enter: go", 640.0, 34.0, mine);
-        } else {
-            let missing = LOADOUT_SIZE - self.picked.len();
-            center_text(&format!("pick {missing} more"), 640.0, 34.0, TEXT_DIM);
+        // Footer: CLEAR and GO buttons, and on a roomy screen the keys under them.
+        let width = view::layout().size.x;
+        let (button_y, button_h) = if cards.roomy() { (height - 110.0, 44.0) } else { (height - 44.0, 38.0) };
+        let (w_clear, w_go) = (140.0f32.min((width - 36.0) * 0.4), 220.0f32.min((width - 36.0) * 0.6));
+        let left = (width - w_clear - 12.0 - w_go) / 2.0;
+        let clear = button(Rect::new(left, button_y, w_clear, button_h), "CLEAR", !self.picked.is_empty(), TEXT);
+        let missing = LOADOUT_SIZE - self.picked.len();
+        let label = if ready { "GO".to_string() } else { format!("pick {missing} more") };
+        let go = button(Rect::new(left + w_clear + 12.0, button_y, w_go, button_h), &label, ready, mine);
+        if cards.roomy() {
+            center_wide("Enter: go     Backspace: clear     Esc: back to the menu", height - 36.0, 20.0, TEXT_DIM);
         }
-        center_text("Backspace: clear     Esc: back to the menu", 690.0, 20.0, TEXT_DIM);
         glow.present();
+        (clear, go)
     }
 }
 
-/// Two columns of five cards, filled column by column: the left one holds the
-/// arsenal's first five weapons.
-fn card_rect(i: usize) -> Rect {
-    let (col, row) = (i / 5, i % 5);
-    let x = 60.0 + col as f32 * (CARD_W + 40.0);
-    Rect::new(x, 168.0 + row as f32 * (CARD_H + CARD_GAP), CARD_W, CARD_H)
+/// Where the cards go on this screen. Two columns of five on a wide screen,
+/// filled column by column (the left one holds the arsenal's first five
+/// weapons); one column of ten on a narrow one. Cards shrink to fit the
+/// height, and a short screen trades the help lines for room.
+struct Cards {
+    cols: usize,
+    left: f32,
+    top: f32,
+    w: f32,
+    h: f32,
+}
+
+impl Cards {
+    fn new() -> Cards {
+        let size = view::layout().size;
+        let cols = if size.x >= 900.0 { 2 } else { 1 };
+        let rows = (ARSENAL.len() / cols) as f32;
+        let (top, bottom) = if size.y >= 700.0 { (168.0, 130.0) } else { (60.0, 50.0) };
+        let w = ((size.x - 60.0 - (cols - 1) as f32 * 40.0) / cols as f32).min(560.0);
+        let h = ((size.y - top - bottom) / rows - CARD_GAP).min(76.0);
+        let left = (size.x - cols as f32 * w - (cols - 1) as f32 * 40.0) / 2.0;
+        Cards { cols, left, top, w, h }
+    }
+
+    /// Whether there is room for the help lines.
+    fn roomy(&self) -> bool {
+        self.top > 100.0
+    }
+
+    fn rect(&self, i: usize) -> Rect {
+        let rows = ARSENAL.len() / self.cols;
+        let (col, row) = (i / rows, i % rows);
+        Rect::new(self.left + col as f32 * (self.w + 40.0), self.top + row as f32 * (self.h + CARD_GAP), self.w, self.h)
+    }
 }

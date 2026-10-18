@@ -149,3 +149,30 @@ pub fn center_text(text: &str, y: f32, size: f32, color: Color) {
     let dim = measure_text(text, None, size as u16, 1.0);
     draw_text(text, (sim::TILE * sim::MAP_W as f32 - dim.width) / 2.0, y, size, color);
 }
+
+/// `center_text` for picture coordinates (HUD, plates, armory): centred on the
+/// picture's real width, and shrunk if it would not fit on a narrow screen.
+pub fn center_wide(text: &str, y: f32, size: f32, color: Color) {
+    let width = crate::view::layout().size.x;
+    let measured = measure_text(text, None, size as u16, 1.0).width;
+    let size = if measured > width - 24.0 { size * (width - 24.0) / measured } else { size };
+    let dim = measure_text(text, None, size as u16, 1.0);
+    draw_text(text, (width - dim.width) / 2.0, y, size, color);
+}
+
+/// A button in picture coordinates; returns true on the frame it is clicked or
+/// tapped (macroquad turns a tap into a mouse click). Drawing and handling in
+/// one call is "immediate-mode UI": no button objects to keep in sync with the
+/// screen, the code that draws a button is the code that reacts to it.
+pub fn button(r: Rect, label: &str, enabled: bool, accent: Color) -> bool {
+    let mouse = crate::view::screen_to_picture(Vec2::from(mouse_position()));
+    let hover = enabled && r.contains(mouse);
+    let bg = if hover { Color::new(0.11, 0.12, 0.145, 1.0) } else { Color::new(0.075, 0.08, 0.095, 1.0) };
+    let fg = if enabled { accent } else { Color::new(0.3, 0.31, 0.35, 1.0) };
+    draw_rectangle(r.x, r.y, r.w, r.h, bg);
+    draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, fg);
+    let size = (r.h * 0.5).min(26.0);
+    let dim = measure_text(label, None, size as u16, 1.0);
+    draw_text(label, r.x + (r.w - dim.width) / 2.0, r.y + (r.h + dim.offset_y) / 2.0, size, fg);
+    hover && is_mouse_button_pressed(MouseButton::Left)
+}

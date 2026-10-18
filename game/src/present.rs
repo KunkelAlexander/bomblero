@@ -19,7 +19,7 @@ use crate::hud;
 use crate::lights::{self, Light, Lights};
 use crate::net::RateMeter;
 use crate::terrain::Terrain;
-use crate::view::Glow;
+use crate::view::{self, Glow};
 
 #[derive(Default)]
 pub struct Presenter {
@@ -41,6 +41,7 @@ impl Presenter {
 
         self.floor(replica, &[], glow);
         self.actors(&replica.world);
+        glow.overlay();
         hud::draw(&replica.world, replica.me as usize, can_restart, banner, self.down_rate.per_second, self.up_rate.per_second, self.frame_ms);
         glow.present();
     }
@@ -65,6 +66,7 @@ impl Presenter {
         self.effects.lights(&mut lights);
         lights.extend_from_slice(extra);
 
+        view::follow(replica.world.players[replica.me as usize].pos);
         glow.begin();
         self.terrain.draw(&replica.world.map, &lights);
         // Created on the first frame: it needs the graphics context.

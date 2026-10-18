@@ -65,6 +65,10 @@ Early but playable. Done so far:
   checks every choice (five different weapons, accepted once) before it
   touches the match.
 * Simple bots, 100 HP, respawning, first to 15 kills.
+* Plays on phones and tablets: twin-stick touch controls (left thumb moves,
+  right thumb aims and fires, tap a weapon card to switch), an on-screen keypad
+  for room codes, and a layout that adapts to any screen shape. Small screens
+  zoom in and follow your player instead of shrinking the arena.
 * Online play with room codes: one player hosts, friends join from their own
   browsers. Joiners see the match smoothed by interpolation, with a ping readout.
 * A look of its own: a dark cave of mottled stone with polished black walls,
