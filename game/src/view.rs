@@ -144,11 +144,12 @@ pub fn screen_to_world(screen: Vec2) -> Vec2 {
 }
 
 /// How bright a colour must be before it glows (see `DOWN_FRAGMENT`).
-const THRESHOLD: f32 = 0.6;
+const THRESHOLD: f32 = 0.65;
 
 /// The glow post-process ("bloom"): draw the scene into an offscreen texture,
-/// blur the bright parts of it at half, quarter and eighth size, and put the
-/// sum on the window. See the shaders in shaders.rs.
+/// blur the bright parts of it at half and quarter size, and put the sum on
+/// the window. (A third, eighth-size level made a wider halo, but it was more
+/// glow than the game needs and cost three more passes.) See the shaders in shaders.rs.
 ///
 /// A frame has two layers:
 ///   * the scene, between `begin` and `present`: the arena, and anything that
@@ -185,7 +186,7 @@ impl Glow {
             levels: RefCell::new(Vec::new()),
             down: material(shaders::DOWN_FRAGMENT, &[("texel", UniformType::Float2), ("threshold", UniformType::Float1)], &[]),
             blur: material(shaders::BLUR_FRAGMENT, &[("step", UniformType::Float2)], &[]),
-            combine: material(shaders::COMBINE_FRAGMENT, &[], &["Near", "Mid", "Far"]),
+            combine: material(shaders::COMBINE_FRAGMENT, &[], &["Near", "Far"]),
         }
     }
 
@@ -199,8 +200,8 @@ impl Glow {
                 t
             };
             *self.scene.borrow_mut() = target(w, h);
-            let levels: Vec<[RenderTarget; 2]> = [2, 4, 8].iter().map(|d| [target(w / d, h / d), target(w / d, h / d)]).collect();
-            for (name, level) in ["Near", "Mid", "Far"].iter().zip(&levels) {
+            let levels: Vec<[RenderTarget; 2]> = [2, 4].iter().map(|d| [target(w / d, h / d), target(w / d, h / d)]).collect();
+            for (name, level) in ["Near", "Far"].iter().zip(&levels) {
                 self.combine.set_texture(name, level[0].texture.clone());
             }
             *self.levels.borrow_mut() = levels;
