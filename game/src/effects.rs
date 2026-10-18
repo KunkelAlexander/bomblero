@@ -119,16 +119,6 @@ impl Effects {
                 }
                 self.ring(pos, 18.0, 0.15, color, 0.3);
             }
-            Event::Cross { pos, arms } => {
-                // The plus is four fat beams, one per arm, so it is exactly as
-                // long as the walls let the blast be.
-                for (arm, dir) in [vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0), vec2(0.0, -1.0)].into_iter().enumerate() {
-                    self.beams.push(Beam { from: pos, to: pos + dir * arms[arm], age: 0.0, color: DANGER, width: 22.0 });
-                    self.burst(pos + dir * arms[arm] * 0.5, 4, 40.0..140.0, DANGER);
-                }
-                self.ring(pos, 40.0, 0.4, DANGER, 0.9);
-                self.burst(pos, 10, 100.0..260.0, DANGER);
-            }
             Event::Hit { victim, pos, .. } => {
                 self.ring(pos, 20.0, 0.2, WHITE, 0.0);
                 self.burst(pos, 6, 60.0..160.0, player_color(victim as usize));

@@ -55,8 +55,9 @@ Early but playable. Done so far:
   mixes L, T and Z walls, brick patches and an open middle.
 * Ten weapons as rows of a data table: **Neon Blaster** (fast bolts),
   **Scatter** (shotgun), **Rocket** (explosion that digs a crater), **Bouncer**
-  (ricochets off walls), **Bomb** (dropped at your feet, plus-shaped blast that
-  walls cut short), **Railgun** (piercing beam), **Cluster** (a shell that
+  (ricochets off walls), **Bomb** (dropped at your feet, short fuse, goes off
+  when an enemy touches it), **Railgun** (instant beam through players, stopped
+  by bricks), **Cluster** (a shell that
   bursts into bomblets), **Swarm** (six homing missiles), **Teleport** (jump
   to where it lands, or swap places with whoever it hits) and **Nova** (one
   huge blast that clears a room). Each has a magazine and reloads

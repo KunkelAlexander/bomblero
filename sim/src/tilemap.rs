@@ -186,6 +186,66 @@ pub const MAP_GRID: &str = "\
 #S..bb...#b..bb..........bb..b#...bb..S#
 ########################################";
 
+/// Map 2: "Anthill". Liero's own idea: the arena is earth (bricks), and the
+/// only open space is a nest of ant tunnels. What is new here: the map is
+/// yours to change. Anything that blows up is a shovel, and a Block seals a
+/// tunnel behind you. Rock layers (walls) run through the earth, so however
+/// much is dug, the nest never becomes one big room: it opens up into long
+/// galleries joined by a few shafts. The lane through the middle is plugged
+/// with earth on each side; blasted open, it is the longest sightline there is.
+pub const MAP_ANTHILL: &str = "########################################
+#S..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..S#
+#...bbbbbbbbbbb..S....S..bbbbbbbbbbb...#
+#.#####bb#######.######.#######bb#####.#
+#.bbbbbbbbbbbbbb.bbbbbb.bbbbbbbbbbbbbb.#
+#....bb##bb......bbbbbb......bb##bb....#
+#.#b.........bbbbbbbbbbbbbb.........b#.#
+#.####bbb###.##############.###bbb####.#
+#.bbbbbbbbbb................bbbbbbbbbb.#
+#...bbbbbbbb...#........#...bbbbbbbb...#
+#S......b......................b......S#
+#S......b......................b......S#
+#...bbbbbbbb...#........#...bbbbbbbb...#
+#.bbbbbbbbbb................bbbbbbbbbb.#
+#.####bbb###.##############.###bbb####.#
+#.#b.........bbbbbbbbbbbbbb.........b#.#
+#....bb##bb......bbbbbb......bb##bb....#
+#.bbbbbbbbbbbbbb.bbbbbb.bbbbbbbbbbbbbb.#
+#.#####bb#######.######.#######bb#####.#
+#...bbbbbbbbbbb..S....S..bbbbbbbbbbb...#
+#S..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..S#
+########################################";
+
+/// Map 3: "Pinball". The opposite of the Anthill: a wide open table where
+/// nothing breaks and there is almost nowhere to hide. Single pillars are the
+/// bumpers, the staircases are slingshots and a diamond sits in the middle. A
+/// Bouncer bolt hits a staircase on a step's face or right on its corner, so
+/// it comes off at angles a flat wall never gives. What is new here: cover is
+/// something you bring. A Block is the only wall you can count on.
+pub const MAP_PINBALL: &str = "\
+########################################
+#.........S..................S.........#
+#.S............#........#............S.#
+#.....#.....#...#......#...#.....#.....#
+#................#....#................#
+#......................................#
+#........#....................#........#
+#...#..............................#...#
+#............#.....##.....#............#
+#.S..#............####............#..S.#
+#...###..........######..........###...#
+#...###..........######..........###...#
+#.S..#............####............#..S.#
+#............#.....##.....#............#
+#...#..............................#...#
+#........#....................#........#
+#......................................#
+#................#....#................#
+#.....#.....#...#......#...#.....#.....#
+#.S............#........#............S.#
+#.........S..................S.........#
+########################################";
+
 /// The menu's map: a plaza with a shooting range, and three alcoves at the
 /// bottom, one per menu option. The player WALKS to a choice instead of picking
 /// it from a list, so the menu is also the controls tutorial. It is an ordinary
@@ -214,6 +274,26 @@ pub const MAP_HUB: &str = "\
 ####.......######......######.......####
 ########################################";
 
+/// A map a match can be played on.
+///
+/// Pattern: Type Object, as with `WeaponDef`: a map is a row of data, and a new
+/// map is a new row. Online, only its index in `MAPS` travels (in the `Welcome`),
+/// never the name or the art: both ends have the same table.
+pub struct MapDef {
+    pub name: &'static str,
+    /// One line for the setup screen.
+    pub blurb: &'static str,
+    pub art: &'static str,
+}
+
+/// The maps of the setup screen, in its order. The hub is not one of them: it
+/// is the menu, not a place to play a match.
+pub const MAPS: [MapDef; 3] = [
+    MapDef { name: "Grid", blurb: "walls, bricks and an open plaza", art: MAP_GRID },
+    MapDef { name: "Anthill", blurb: "solid earth: dig your own way", art: MAP_ANTHILL },
+    MapDef { name: "Pinball", blurb: "open, unbreakable, bouncy", art: MAP_PINBALL },
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +305,33 @@ mod tests {
         // Every spawn must be a free tile, or a player would start inside a wall.
         for s in &map.spawns {
             assert!(!map.circle_hits_wall(*s, 10.0));
+        }
+    }
+
+    /// What every playable map must offer: a spawn for each of the (up to) four
+    /// players, and spawns that can all reach each other without breaking a
+    /// brick. Otherwise someone could start a match walled in, and the bots,
+    /// who only dig when they have to, might never find anyone.
+    #[test]
+    fn every_map_is_playable() {
+        for def in &MAPS {
+            let map = Tilemap::from_ascii(def.art);
+            assert!(map.spawns.len() >= 4, "{} needs at least 4 spawns", def.name);
+            // Flood fill from the first spawn through empty tiles.
+            let (sx, sy) = tile_coords(map.spawns[0]);
+            let mut seen = vec![false; MAP_W * MAP_H];
+            let mut todo = vec![(sx, sy)];
+            while let Some((x, y)) = todo.pop() {
+                if map.get(x, y) != Tile::Empty || seen[y as usize * MAP_W + x as usize] {
+                    continue;
+                }
+                seen[y as usize * MAP_W + x as usize] = true;
+                todo.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]);
+            }
+            for s in &map.spawns {
+                let (x, y) = tile_coords(*s);
+                assert!(seen[y as usize * MAP_W + x as usize], "{}: spawn ({x}, {y}) is cut off", def.name);
+            }
         }
     }
 

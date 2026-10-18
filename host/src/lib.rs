@@ -28,9 +28,9 @@ pub mod throttle;
 
 pub use throttle::Throttle;
 
-use protocol::{ClientMsg, PlayerId, Snapshot, Welcome};
+use protocol::{ClientMsg, PlayerId, Rules, Snapshot, Welcome};
 use sim::bots::Bot;
-use sim::tilemap::{Tilemap, MAP_GRID};
+use sim::tilemap::{Tilemap, MAPS};
 use sim::weapons::{valid_loadout, DEFAULT_LOADOUT};
 use sim::{Event, Input, World};
 
@@ -50,14 +50,20 @@ pub struct Host {
     world: World,
     controllers: Vec<Controller>,
     seed: u32,
+    /// The match's rules, repeated in every `Welcome`.
+    rules: Rules,
     /// Which humans have already chosen their weapons (see `handle`).
     chose: Vec<bool>,
 }
 
 impl Host {
-    /// A new match with `slots` players, all bots until humans join.
-    pub fn new(slots: usize, seed: u32) -> Host {
-        Host::on_map(MAP_GRID, slots, seed, &DEFAULT_LOADOUT)
+    /// A new match with `slots` players, all bots until humans join, played
+    /// by the given rules.
+    pub fn new(slots: usize, rules: Rules, seed: u32) -> Host {
+        let mut host = Host::on_map(MAPS[rules.map as usize].art, slots, seed, &DEFAULT_LOADOUT);
+        host.world.score_limit = rules.score_limit;
+        host.rules = rules;
+        host
     }
 
     /// The same, on another map and with another starting set of weapons for
@@ -65,7 +71,7 @@ impl Host {
     pub fn on_map(map: &str, slots: usize, seed: u32, loadout: &[u8]) -> Host {
         let world = World::new(Tilemap::from_ascii(map), slots, loadout, seed);
         let controllers = (0..slots).map(|i| Controller::Bot(bot_for(seed, i))).collect();
-        Host { world, controllers, seed, chose: vec![false; slots] }
+        Host { world, controllers, seed, rules: Rules::default(), chose: vec![false; slots] }
     }
 
     /// A human arrives: give them the first slot a bot is holding.
@@ -76,7 +82,7 @@ impl Host {
         self.chose[slot] = false;
         // No events: the tiles above are already up to date, and replaying
         // explosions from before the newcomer arrived would be wrong.
-        Some(Welcome { you: slot as PlayerId, tiles: self.world.map.tiles().to_vec(), snapshot: self.snapshot(Vec::new()) })
+        Some(Welcome { you: slot as PlayerId, rules: self.rules, tiles: self.world.map.tiles().to_vec(), snapshot: self.snapshot(Vec::new()) })
     }
 
     /// A human goes away: a bot takes the slot back, so the match carries on.
@@ -181,7 +187,7 @@ mod tests {
 
     #[test]
     fn replica_follows_the_host_through_bytes() {
-        let mut host = Host::new(4, 7);
+        let mut host = Host::new(4, Rules::default(), 7);
         let mut replica = join_as_client(&mut host);
         assert_eq!(replica.me, 0);
 
@@ -206,7 +212,7 @@ mod tests {
 
     #[test]
     fn tile_changes_reach_the_replica() {
-        let mut host = Host::new(4, 7);
+        let mut host = Host::new(4, Rules::default(), 7);
         let mut replica = join_as_client(&mut host);
         // Tile (2,5) is a brick in the Grid map. Announce its destruction
         // without touching the host's own map, so that only the *event* can be
@@ -221,7 +227,7 @@ mod tests {
 
     #[test]
     fn a_late_joiner_gets_the_current_map() {
-        let mut host = Host::new(4, 7);
+        let mut host = Host::new(4, Rules::default(), 7);
         host.world.map.set(2, 5, sim::Tile::Empty);
         let replica = join_as_client(&mut host);
         assert_eq!(replica.world.map.tiles(), host.world().map.tiles());
@@ -229,7 +235,7 @@ mod tests {
 
     #[test]
     fn join_leave_and_full_match() {
-        let mut host = Host::new(2, 1);
+        let mut host = Host::new(2, Rules::default(), 1);
         assert_eq!(host.join().unwrap().you, 0);
         assert_eq!(host.join().unwrap().you, 1);
         assert!(host.join().is_none(), "no free slot left");
@@ -241,7 +247,7 @@ mod tests {
     fn a_player_gets_the_weapons_they_chose_once() {
         use sim::weapons::{BOMB, NOVA, SWARM, TELEPORT, CLUSTER};
         let ids = |host: &Host, slot: usize| host.world().players[slot].weapons.iter().map(|w| w.id).collect::<Vec<_>>();
-        let mut host = Host::new(3, 1);
+        let mut host = Host::new(3, Rules::default(), 1);
         host.join(); // slot 0
         host.handle(0, ClientMsg::Loadout(vec![NOVA, BOMB, SWARM, TELEPORT, CLUSTER]));
         assert_eq!(ids(&host, 0), [NOVA, BOMB, SWARM, TELEPORT, CLUSTER]);
@@ -261,7 +267,7 @@ mod tests {
 
     #[test]
     fn inputs_for_bot_slots_are_ignored() {
-        let mut host = Host::new(2, 1);
+        let mut host = Host::new(2, Rules::default(), 1);
         // Nobody joined, so slot 1 is a bot. A forged input must not move it.
         let forged = Input { fire: true, ..Input::default() };
         host.handle(1, ClientMsg::Input(forged));
@@ -272,7 +278,7 @@ mod tests {
     /// `Snapshot`, this fails and the cost shows up before the players feel it.
     #[test]
     fn one_second_of_snapshots_fits_the_budget() {
-        let mut host = Host::new(4, 7);
+        let mut host = Host::new(4, Rules::default(), 7);
         let mut every_tick = 0;
         let mut every_second_tick = 0;
         let mut throttle = Throttle::new(2);

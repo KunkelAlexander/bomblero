@@ -135,4 +135,20 @@ mod tests {
         let deaths: i32 = world.players.iter().map(|p| p.deaths).sum();
         assert!(deaths > 0, "four bots should have killed someone in 90 s");
     }
+
+    /// The same on every map, with the weapons bots really carry. The Anthill is
+    /// the hard case: its tunnels hide everyone until someone digs.
+    #[test]
+    fn bots_fight_on_every_map() {
+        for def in &crate::tilemap::MAPS {
+            let mut world = World::new(Tilemap::from_ascii(def.art), 4, &crate::weapons::DEFAULT_LOADOUT, 5);
+            let mut bots: Vec<Bot> = (0..4).map(|i| Bot::new(100 + i)).collect();
+            for _ in 0..60 * 90 {
+                let inputs: Vec<Input> = (0..4).map(|i| bots[i].think(&world, i)).collect();
+                world.step(&inputs);
+            }
+            let kills: i32 = world.players.iter().map(|p| p.kills.max(0)).sum();
+            assert!(kills >= 3, "{}: bots scored only {kills} kills in 90 s", def.name);
+        }
+    }
 }

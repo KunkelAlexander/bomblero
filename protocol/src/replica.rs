@@ -19,7 +19,7 @@
 use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 
-use sim::tilemap::MAP_GRID;
+use sim::tilemap::MAPS;
 use sim::{Event, Tilemap, World, DT, TILE};
 
 use crate::{HostMsg, PlayerId, Snapshot, Welcome};
@@ -57,11 +57,14 @@ pub struct Replica {
 
 impl Replica {
     pub fn new(welcome: Welcome, delay: u32) -> Replica {
-        // Any valid map will do as a starting point: the real tiles replace it
-        // on the next line. (With several maps, `Welcome` will name the map.)
-        let map = Tilemap::from_ascii(MAP_GRID);
-        let mut world = World::new(map, welcome.snapshot.players.len(), &[], 0);
+        // Start from the map the host named, then lay the real tiles over it
+        // (the match may be minutes old and full of craters). The number comes
+        // from another machine, so an unknown one falls back to the first map
+        // rather than crashing.
+        let def = MAPS.get(welcome.rules.map as usize).unwrap_or(&MAPS[0]);
+        let mut world = World::new(Tilemap::from_ascii(def.art), welcome.snapshot.players.len(), &[], 0);
         world.map.load_tiles(&welcome.tiles);
+        world.score_limit = welcome.rules.score_limit;
         let playhead = welcome.snapshot.tick as f32;
         let mut replica = Replica {
             world,
@@ -194,7 +197,7 @@ mod tests {
     use sim::vec2;
 
     fn world() -> World {
-        World::new(Tilemap::from_ascii(MAP_GRID), 2, &[], 0)
+        World::new(Tilemap::from_ascii(MAPS[0].art), 2, &[], 0)
     }
 
     /// Player 0 stands at x = `tick * 10`, so a position tells the tick.
@@ -206,7 +209,7 @@ mod tests {
 
     fn replica(delay: u32) -> Replica {
         let w = world();
-        Replica::new(Welcome { you: 0, tiles: w.map.tiles().to_vec(), snapshot: snapshot(0, Vec::new()) }, delay)
+        Replica::new(Welcome { you: 0, rules: crate::Rules::default(), tiles: w.map.tiles().to_vec(), snapshot: snapshot(0, Vec::new()) }, delay)
     }
 
     fn arrive(r: &mut Replica, tick: u32, events: Vec<Event>) {

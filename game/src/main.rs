@@ -23,6 +23,7 @@ mod local;
 mod menu;
 mod net;
 mod present;
+mod setup;
 mod share;
 mod shaders;
 mod socket;
@@ -37,6 +38,7 @@ use local::LocalGame;
 use macroquad::prelude::*;
 use menu::{Choice, Menu};
 use present::Presenter;
+use setup::{Settings, Setup};
 use sim::{Input, DT};
 
 fn window_conf() -> Conf {
@@ -55,6 +57,8 @@ fn window_conf() -> Conf {
 /// else, and the main loop just asks the current one to run a frame.
 enum Screen {
     Menu(Menu),
+    /// Choosing the map and rules of a match you host (not one you join).
+    Setup(Setup),
     /// Choosing weapons, on the way from the menu to a match.
     Armory(Armory),
     /// A match whose host runs in this process: offline, or with a room open.
@@ -72,8 +76,10 @@ struct HostGame {
 }
 
 impl HostGame {
-    fn new(open_room: bool, loadout: &[u8]) -> HostGame {
-        let mut game = LocalGame::new(new_seed(), loadout);
+    fn new(open_room: bool, loadout: &[u8], settings: Settings) -> HostGame {
+        // A room for friends always has every seat; offline, you and your bots.
+        let slots = if open_room { local::PLAYER_COUNT } else { 1 + settings.bots };
+        let mut game = LocalGame::new(new_seed(), loadout, slots, settings.rules);
         if open_room {
             game.open_room();
         }
@@ -143,6 +149,8 @@ async fn main() {
     let mut screen = Screen::Menu(Menu::new());
     // What the player carried last time: the picker starts from it.
     let mut loadout = sim::weapons::DEFAULT_LOADOUT.to_vec();
+    // The same for the match setup.
+    let mut settings = Settings::default();
 
     loop {
         // Esc leaves any screen for the menu (the menu itself uses Esc to
@@ -157,14 +165,24 @@ async fn main() {
         let mut next = None;
         match &mut screen {
             Screen::Menu(menu) => {
-                // Every way into a match goes through the weapon picker.
-                next = menu.frame(&mut controls, &glow).map(|choice| Screen::Armory(Armory::new(choice, loadout.clone())));
+                // Every way into a match goes through the weapon picker; a match
+                // you host first through the setup (a joiner gets the host's).
+                next = menu.frame(&mut controls, &glow).map(|choice| match choice {
+                    Choice::Join(_) => Screen::Armory(Armory::new(choice, loadout.clone())),
+                    _ => Screen::Setup(Setup::new(choice, settings)),
+                });
+            }
+            Screen::Setup(setup) => {
+                if let Some((choice, chosen)) = setup.frame(&glow) {
+                    settings = chosen;
+                    next = Some(Screen::Armory(Armory::new(choice, loadout.clone())));
+                }
             }
             Screen::Armory(armory) => {
                 if let Some((choice, picked)) = armory.frame(&glow) {
                     next = Some(match choice {
-                        Choice::Offline => Screen::Hosting(HostGame::new(false, &picked)),
-                        Choice::Host => Screen::Hosting(HostGame::new(true, &picked)),
+                        Choice::Offline => Screen::Hosting(HostGame::new(false, &picked, settings)),
+                        Choice::Host => Screen::Hosting(HostGame::new(true, &picked, settings)),
                         Choice::Join(code) => Screen::Joined(JoinGame::new(code, &picked)),
                     });
                     loadout = picked;
@@ -183,7 +201,7 @@ async fn main() {
             // Stick hints only where the sticks do something.
             let playing = match &screen {
                 Screen::Menu(menu) => !menu.typing(),
-                Screen::Armory(_) => false,
+                Screen::Setup(_) | Screen::Armory(_) => false,
                 Screen::Hosting(_) | Screen::Joined(_) => true,
             };
             controls.touch.draw(playing);

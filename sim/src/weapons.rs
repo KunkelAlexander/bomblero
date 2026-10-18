@@ -1,7 +1,7 @@
 // Pattern: Type Object. A "weapon type" is a row of data in a table, not a
 // Rust type. The weapons below behave differently mostly because their
 // numbers differ; the few genuinely new mechanics (a swarm's several missiles,
-// a ricochet, a plus-shaped blast) are one flag or number each, read in
+// a ricochet) are one flag or number each, read in
 // `world.rs`. More weapons later means more rows, and a little code only for
 // mechanics that are more than a number (`Special`: homing, a cluster burst, a
 // teleport, and later things like gravity wells).
@@ -73,7 +73,8 @@ pub struct WeaponDef {
     pub kind: Kind,
     /// Damage on a direct hit (or to each player a beam passes through).
     pub damage: f32,
-    /// Projectile speed in px/s. Unused by beams.
+    /// Projectile speed in px/s. Unused by beams. A speed of 0 means the
+    /// projectile is dropped at the player's feet, and `lifetime` is its fuse.
     pub speed: f32,
     /// Seconds before an unspent projectile disappears (or explodes).
     pub lifetime: f32,
@@ -91,18 +92,13 @@ pub struct WeaponDef {
     pub blast_damage: f32,
     /// Speed change (px/s) given to a player at the centre of a blast / on a hit.
     pub knockback: f32,
-    /// How much a brick is hurt by this weapon (bricks have 3 hp).
+    /// How much a brick is hurt by this weapon (bricks have 3 hp). Beams
+    /// ignore it: they stop at the first brick (see `fire_beam`).
     pub tile_damage: u8,
-    /// How many bricks a beam can cut through before it stops.
-    pub beam_bricks: u8,
     /// Projectiles per shot (the swarm fires several, each with its own spread).
     pub pellets: u8,
     /// Does the projectile ricochet off walls instead of stopping at them?
     pub bounce: bool,
-    /// Is the blast a plus shape along the tile grid (Bomberman) instead of a
-    /// circle? Then `blast_radius` is the arm length. A speed of 0 means the
-    /// projectile is dropped at the player's feet, and `lifetime` is its fuse.
-    pub cross: bool,
     pub special: Special,
 }
 
@@ -110,9 +106,12 @@ pub static WEAPONS: [WeaponDef; 11] = [
     WeaponDef {
         name: "Neon Blaster",
         kind: Kind::Projectile,
-        damage: 12.0,
+        // Balance: was 12 damage and 1.2 s (840 px), the best gun at every
+        // range. Now it is the close-range gun, and the long range is the
+        // railgun's.
+        damage: 10.0,
         speed: 700.0,
-        lifetime: 1.2,
+        lifetime: 0.9,
         cooldown: 0.12,
         mag: 20,
         reload: 1.2,
@@ -122,10 +121,8 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 0.0,
         knockback: 60.0,
         tile_damage: 0,
-        beam_bricks: 0,
         pellets: 1,
         bounce: false,
-        cross: false,
         special: Special::None,
     },
     WeaponDef {
@@ -143,10 +140,8 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 60.0,
         knockback: 650.0,
         tile_damage: 3,
-        beam_bricks: 0,
         pellets: 1,
         bounce: false,
-        cross: false,
         special: Special::None,
     },
     WeaponDef {
@@ -163,11 +158,12 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_radius: 0.0,
         blast_damage: 0.0,
         knockback: 350.0,
-        tile_damage: 3,
-        beam_bricks: 2,
+        // Balance: the rail used to cut two bricks, so a brick was no cover
+        // from an instant, map-long beam you cannot see coming. Now bricks
+        // stop it and digging is the explosives' job.
+        tile_damage: 0,
         pellets: 1,
         bounce: false,
-        cross: false,
         special: Special::None,
     },
     WeaponDef {
@@ -185,16 +181,14 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 0.0,
         knockback: 0.0,
         tile_damage: 0,
-        beam_bricks: 0,
         pellets: 1,
         bounce: false,
-        cross: false,
         special: Special::None,
     },
     WeaponDef {
         name: "Bouncer",
         kind: Kind::Projectile,
-        damage: 22.0,
+        damage: 25.0, // four hits kill (22 needed five, and lost to the blaster)
         speed: 520.0,
         lifetime: 3.0,
         cooldown: 0.35,
@@ -206,31 +200,34 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 0.0,
         knockback: 120.0,
         tile_damage: 0,
-        beam_bricks: 0,
         pellets: 1,
         bounce: true,
-        cross: false,
         special: Special::None,
     },
     WeaponDef {
         name: "Bomb",
         kind: Kind::Projectile,
         damage: 0.0,
+        // Dropped at your feet. It also goes off the moment an enemy touches
+        // it, so it doubles as a mine.
+        // Balance: it used to be a Bomberman plus, 75 damage, 1.8 s fuse:
+        // standing diagonally from it was perfectly safe, and anyone who walked
+        // off within 1.4 s took nothing. Now it is round, with the same reach as
+        // the plus had (3.5 tiles) in every direction, and a shorter fuse: you
+        // must react within about half a second.
         speed: 0.0,
-        lifetime: 1.8,
+        lifetime: 1.2,
         cooldown: 0.8,
         mag: 2,
         reload: 3.0,
         spread: 0.0,
         range: 0.0,
-        blast_radius: 96.0, // three tiles per arm
-        blast_damage: 75.0,
+        blast_radius: 112.0,
+        blast_damage: 120.0,
         knockback: 450.0,
         tile_damage: 3,
-        beam_bricks: 0,
         pellets: 1,
         bounce: false,
-        cross: true,
         special: Special::None,
     },
     // ---- the second batch ---------------------------------------------------
@@ -249,10 +246,8 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 0.0,
         knockback: 0.0,
         tile_damage: 0,
-        beam_bricks: 0,
         pellets: 1,
         bounce: false,
-        cross: false,
         special: Special::Cluster(7, BOMBLET),
     },
     WeaponDef {
@@ -270,10 +265,8 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 14.0,
         knockback: 150.0,
         tile_damage: 1,
-        beam_bricks: 0,
         pellets: 6,
         bounce: false,
-        cross: false,
         special: Special::Homing(3.0),
     },
     WeaponDef {
@@ -291,10 +284,8 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 0.0,
         knockback: 0.0,
         tile_damage: 0,
-        beam_bricks: 0,
         pellets: 1,
         bounce: false,
-        cross: false,
         special: Special::Teleport,
     },
     WeaponDef {
@@ -312,10 +303,8 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 140.0,
         knockback: 1000.0,
         tile_damage: 3,
-        beam_bricks: 0,
         pellets: 1,
         bounce: false,
-        cross: false,
         special: Special::None,
     },
     // Not in anyone's loadout: what the Cluster shell splits into.
@@ -334,10 +323,8 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_damage: 24.0,
         knockback: 300.0,
         tile_damage: 2,
-        beam_bricks: 0,
         pellets: 1,
         bounce: false,
-        cross: false,
         special: Special::None,
     },
 ];

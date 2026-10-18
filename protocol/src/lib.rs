@@ -59,12 +59,32 @@ pub enum HostMsg {
     Full,
 }
 
+/// The rules of a match, chosen by the host on the setup screen. Only the host
+/// chooses (it runs the match); a joiner learns them from the `Welcome`.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Rules {
+    /// Index into `sim::tilemap::MAPS`.
+    pub map: u8,
+    /// Kills to win.
+    pub score_limit: i32,
+}
+
+impl Default for Rules {
+    fn default() -> Rules {
+        Rules { map: 0, score_limit: sim::world::SCORE_LIMIT }
+    }
+}
+
 /// Sent once to a new arrival: everything needed to start from scratch.
 /// This is the "late joiner" message.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Welcome {
     /// The slot this client controls.
     pub you: PlayerId,
+    /// Which map, and how many kills win. The map is named by its number: the
+    /// art is in both programs already, and only the tiles that changed since
+    /// the start need to travel (`tiles`, below).
+    pub rules: Rules,
     /// The whole terrain right now. Snapshots only carry *changes* to it
     /// (`Event::TileChanged`), so a newcomer needs the full grid exactly once.
     pub tiles: Vec<Tile>,

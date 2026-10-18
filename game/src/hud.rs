@@ -18,7 +18,7 @@
 // Read-only like all drawing: it takes `&World` and never changes it.
 
 use macroquad::prelude::*;
-use sim::world::{MAX_HP, RESPAWN_TIME, SCORE_LIMIT};
+use sim::world::{MAX_HP, RESPAWN_TIME};
 use sim::{World, WEAPONS};
 
 use crate::draw::{center_wide, player_color};
@@ -192,7 +192,7 @@ fn draw_scores(world: &World, me: usize, mut x: f32, bar_y: f32) {
         draw_text(&format!("{}", p.kills), x + 27.0, y + 25.0, 26.0, TEXT);
         x += chip_w;
     }
-    draw_text(&format!("first to {SCORE_LIMIT}"), x + 8.0, bar_y + 33.0, 14.0, TEXT_DIM);
+    draw_text(&format!("first to {}", world.score_limit), x + 8.0, bar_y + 33.0, 14.0, TEXT_DIM);
 }
 
 /// The two messages that belong over the arena. They get a dark plate so they

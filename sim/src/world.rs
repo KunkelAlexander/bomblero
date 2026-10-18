@@ -37,10 +37,18 @@ const MAX_SPEED: f32 = 900.0;
 pub const MAX_HP: f32 = 100.0;
 pub const RESPAWN_TIME: f32 = 3.0;
 const SPAWN_INVULN: f32 = 2.0;
+/// The default kills to win. A match can choose another (`World::score_limit`).
 pub const SCORE_LIMIT: i32 = 15;
 /// You hurt yourself half as much as others, but get thrown just as far, so
 /// explosions work as a movement tool without being free.
 const SELF_DAMAGE: f32 = 0.5;
+/// A beam hits a player whose body is this close to its line, not only one it
+/// crosses. Networking note: the host sees players where they are now, but a
+/// joiner aims at a picture that is ~100 ms of interpolation plus their own lag
+/// in the past. An instant beam exactly as wide as a body would land far more
+/// often for the host than for friends; a little slack evens that out. (The
+/// full answer is lag compensation: the host rewinds to what the shooter saw.)
+const BEAM_SLACK: f32 = 4.0;
 
 // The dash has no button: let go of the movement keys (or lift the move thumb),
 // then push again, and the first push is a burst of speed. Phones play with two
@@ -110,9 +118,6 @@ pub enum Event {
     Shot { player: u8, weapon: u8, pos: Vec2 },
     Beam { from: Vec2, to: Vec2 },
     Explosion { pos: Vec2, radius: f32 },
-    /// A Bomberman blast: a plus shape centred on `pos`. `arms` are the lengths
-    /// (px) to the right, down, left and up; a wall or brick cuts an arm short.
-    Cross { pos: Vec2, arms: [f32; 4] },
     Hit { victim: u8, pos: Vec2, damage: f32 },
     /// A brick got damaged or destroyed. This doubles as the "dirty flag" of
     /// the terrain: online, only these changes need to be sent, never the
@@ -135,6 +140,8 @@ pub struct World {
     /// and inputs are labelled with ("tick 1234").
     pub tick: u32,
     pub winner: Option<u8>,
+    /// Kills needed to win. A rule of this match, set by whoever creates it.
+    pub score_limit: i32,
     events: Vec<Event>,
     rng: Rng,
 }
@@ -167,6 +174,7 @@ impl World {
             projectiles: Vec::with_capacity(64),
             tick: 0,
             winner: None,
+            score_limit: SCORE_LIMIT,
             events: Vec::new(),
             rng: Rng::new(seed),
         }
@@ -304,6 +312,9 @@ impl World {
             _ => None,
         };
 
+        // Shooting gives up spawn protection: it is there to let you get your
+        // bearings, not to fight for two seconds without being hurt.
+        self.players[i].invuln = 0.0;
         let w = &mut self.players[i].weapons[slot];
         w.ammo -= 1;
         w.cooldown = def.cooldown;
@@ -378,44 +389,17 @@ impl World {
 
     /// Hitscan: no flying object, the line is resolved instantly.
     fn fire_beam(&mut self, owner: usize, def: &WeaponDef, origin: Vec2, dir: Vec2) {
-        // 1) Walk along the ray to find where it ends, cutting bricks on the way.
-        let mut bricks_left = def.beam_bricks;
-        let mut end = origin + dir * def.range;
-        let mut dist = 0.0;
-        let mut last_tile = (i32::MIN, i32::MIN);
-        while dist < def.range {
-            let p = origin + dir * dist;
-            let (tx, ty) = tile_coords(p);
-            if (tx, ty) != last_tile {
-                last_tile = (tx, ty);
-                match self.map.get(tx, ty) {
-                    Tile::Empty => {}
-                    Tile::Solid => {
-                        end = p;
-                        break;
-                    }
-                    Tile::Brick(hp) => {
-                        let destroyed = def.tile_damage >= hp;
-                        self.hurt_tile(tx, ty, def.tile_damage);
-                        if !destroyed || bricks_left == 0 {
-                            end = p;
-                            break;
-                        }
-                        bricks_left -= 1;
-                    }
-                }
-            }
-            dist += 2.0;
-        }
+        // 1) The beam ends at the first wall or brick, and leaves it whole.
+        let end = origin + dir * self.map.distance_to_wall(origin, dir, def.range);
         self.events.push(Event::Beam { from: origin, to: end });
 
-        // 2) Everything within a body-width of that line gets hit. The beam
-        //    pierces, so it is not a "first hit only" test.
+        // 2) Everything within reach of that line gets hit. The beam pierces
+        //    players, so it is not a "first hit only" test.
         for v in 0..self.players.len() {
             if v == owner || !self.players[v].alive {
                 continue;
             }
-            if point_segment_distance(self.players[v].pos, origin, end) < PLAYER_RADIUS {
+            if point_segment_distance(self.players[v].pos, origin, end) < PLAYER_RADIUS + BEAM_SLACK {
                 self.damage_player(v, def.damage, owner, dir * def.knockback);
             }
         }
@@ -472,7 +456,7 @@ impl World {
             self.players[source].kills += if victim == source { -1 } else { 1 };
             self.events.push(Event::Died { victim: victim as u8, killer: source as u8, pos });
             let score = self.players[source].kills;
-            if score >= SCORE_LIMIT && self.winner.is_none() {
+            if score >= self.score_limit && self.winner.is_none() {
                 self.winner = Some(source as u8);
                 self.events.push(Event::MatchWon { player: source as u8 });
             }
@@ -527,8 +511,14 @@ impl World {
                     self.impact(&pr, def, dir, None, Some((tx, ty)));
                     continue 'next;
                 }
+                // A Cluster shell flies through players and bursts only at a
+                // wall or at the end of its fuse. Bursting on someone put all
+                // seven bomblets on them at once: a one-shot kill up close,
+                // which is not what an area weapon is for.
+                let passes_players = matches!(def.special, Special::Cluster(..));
                 let hit = (0..self.players.len()).find(|&j| {
-                    j != pr.owner as usize
+                    !passes_players
+                        && j != pr.owner as usize
                         && self.players[j].alive
                         && self.players[j].pos.distance(pr.pos) < PLAYER_RADIUS + PROJECTILE_RADIUS
                 });
@@ -650,10 +640,6 @@ impl World {
     /// the bricks are, so the brick that a blast destroys still shields you
     /// from that blast: it absorbs exactly one hit.
     fn explode(&mut self, pos: Vec2, def: &WeaponDef, owner: usize) {
-        if def.cross {
-            self.explode_cross(pos, def, owner);
-            return;
-        }
         self.events.push(Event::Explosion { pos, radius: def.blast_radius });
 
         for v in 0..self.players.len() {
@@ -681,48 +667,6 @@ impl World {
         }
     }
 
-    /// The Bomberman blast: the bomb's own tile plus up to `blast_radius / TILE`
-    /// tiles in each of the four directions. Unlike the round blast, walls
-    /// matter here: a solid wall stops an arm, and a brick takes the hit and
-    /// stops it too. That is what makes the plus shape something to play around.
-    fn explode_cross(&mut self, pos: Vec2, def: &WeaponDef, owner: usize) {
-        let (cx, cy) = tile_coords(pos);
-        let reach = (def.blast_radius / TILE).round() as i32;
-        let mut cells = vec![(cx, cy)];
-        let mut arms = [TILE / 2.0; 4]; // from the middle of the bomb's tile
-        for (arm, (dx, dy)) in [(1, 0), (0, 1), (-1, 0), (0, -1)].into_iter().enumerate() {
-            for k in 1..=reach {
-                let (tx, ty) = (cx + dx * k, cy + dy * k);
-                match self.map.get(tx, ty) {
-                    Tile::Solid => break,
-                    Tile::Brick(_) => {
-                        self.hurt_tile(tx, ty, def.tile_damage);
-                        arms[arm] += TILE;
-                        break;
-                    }
-                    Tile::Empty => {
-                        cells.push((tx, ty));
-                        arms[arm] += TILE;
-                    }
-                }
-            }
-        }
-        let centre = tile_center(cx, cy);
-        self.events.push(Event::Cross { pos: centre, arms });
-
-        for v in 0..self.players.len() {
-            let p = self.players[v].pos;
-            // Does the player's circle touch any covered tile?
-            let hit = cells.iter().any(|&(tx, ty)| {
-                let min = vec2(tx as f32 * TILE, ty as f32 * TILE);
-                p.clamp(min, min + Vec2::splat(TILE)).distance(p) < PLAYER_RADIUS
-            });
-            if hit && self.players[v].alive {
-                let impulse = (p - centre).normalize_or_zero() * def.knockback;
-                self.damage_player(v, def.blast_damage, owner, impulse);
-            }
-        }
-    }
 
     fn hurt_tile(&mut self, tx: i32, ty: i32, amount: u8) {
         if let Some(tile) = self.map.damage(tx, ty, amount) {
@@ -813,13 +757,37 @@ mod tests {
     }
 
     #[test]
-    fn railgun_cuts_two_bricks_and_hits_player_behind() {
+    fn railgun_stops_at_a_brick_and_leaves_it_whole() {
         let mut w = two_player_world();
         w.players[1].pos = tile_center(6, 1); // behind bricks at tiles 4 and 5
         fire_once(&mut w, 0, 2, 0.0);
-        assert_eq!(w.map.get(4, 1), Tile::Empty);
-        assert_eq!(w.map.get(5, 1), Tile::Empty);
+        assert_eq!(w.map.get(4, 1), Tile::Brick(BRICK_HP));
+        assert_eq!(w.players[1].hp, MAX_HP, "a brick is cover from the rail");
+    }
+
+    #[test]
+    fn railgun_forgives_a_near_miss() {
+        // 12 px off the beam's line: outside the body (10 px), inside the
+        // beam's extra width.
+        let mut w = World::new(Tilemap::from_ascii(crate::tilemap::MAP_HUB), 2, &[RAILGUN], 1);
+        w.players[0].pos = tile_center(5, 4);
+        w.players[1].pos = tile_center(15, 4) + vec2(0.0, 12.0);
+        fire_once(&mut w, 0, 0, 0.0);
         assert!(w.players[1].hp < MAX_HP);
+    }
+
+    #[test]
+    fn firing_ends_spawn_protection() {
+        let mut w = two_player_world();
+        w.players[0].invuln = SPAWN_INVULN;
+        w.step(&[Input { fire: true, ..Default::default() }]);
+        assert_eq!(w.players[0].invuln, 0.0);
+    }
+
+    #[test]
+    fn bouncer_kills_in_four_hits() {
+        let damage = WEAPONS[BOUNCER as usize].damage;
+        assert!(4.0 * damage >= MAX_HP && 3.0 * damage < MAX_HP);
     }
 
     #[test]
@@ -907,27 +875,54 @@ mod tests {
         assert!(w.projectiles[0].vel.x > 0.0, "and now fly back the other way");
     }
 
+    /// Two players in the open middle of the menu map, the first one carrying
+    /// only `weapon`.
+    fn open_world(weapon: u8, me: (i32, i32), enemy: (i32, i32)) -> World {
+        let mut w = World::new(Tilemap::from_ascii(crate::tilemap::MAP_HUB), 2, &[weapon], 1);
+        w.players[0].pos = tile_center(me.0, me.1);
+        w.players[1].pos = tile_center(enemy.0, enemy.1);
+        w
+    }
+
     #[test]
-    fn bomb_blast_is_a_plus_that_walls_cut_short() {
-        let (mut w, slot) = armed_world(BOMB);
-        w.drain_events();
-        w.step(&[Input { fire: true, weapon: slot, ..Default::default() }]);
+    fn bomb_blast_is_round_and_reaches_the_diagonal() {
+        let mut w = open_world(BOMB, (19, 4), (20, 5)); // diagonal: the old plus missed here
+        w.map.set(17, 4, Tile::Brick(BRICK_HP));
+        w.step(&[Input { fire: true, ..Default::default() }]);
         // Dropped at the owner's feet, not thrown.
-        assert_eq!(w.projectiles[0].pos, tile_center(1, 1));
-        for _ in 0..120 {
+        assert_eq!(w.projectiles[0].pos, tile_center(19, 4));
+        for _ in 0..(1.3 / DT) as i32 {
             w.step(&[]);
         }
         assert!(w.projectiles.is_empty(), "the fuse ran out");
-        assert!(w.players[1].hp < MAX_HP, "tile (3,1) is on the right arm");
-        assert!(w.players[0].hp < MAX_HP, "so is the one who dropped it");
-        assert_eq!(w.map.get(4, 1), Tile::Empty, "the brick at the end of the arm is destroyed");
-        let arms = w.drain_events().into_iter().find_map(|e| match e {
-            Event::Cross { arms, .. } => Some(arms),
-            _ => None,
-        });
-        // Right: two empty tiles and a brick. Left and up: a wall right away.
-        // Down: three empty tiles.
-        assert_eq!(arms, Some([112.0, 112.0, 16.0, 16.0]));
+        assert!(w.players[1].hp < MAX_HP - 50.0, "hp = {}", w.players[1].hp);
+        assert!(w.players[0].hp < MAX_HP, "the one who dropped it is hurt too");
+        assert_eq!(w.map.get(17, 4), Tile::Empty, "and the brick next to it is gone");
+    }
+
+    #[test]
+    fn bomb_goes_off_when_an_enemy_steps_on_it() {
+        let mut w = open_world(BOMB, (19, 4), (22, 4));
+        w.step(&[Input { fire: true, ..Default::default() }]);
+        w.players[0].pos = tile_center(19, 1); // walk away from it
+        let walk_left = Input { move_dir: vec2(-1.0, 0.0), ..Default::default() };
+        for _ in 0..45 {
+            w.step(&[Input::default(), walk_left]);
+        }
+        assert!(w.projectiles.is_empty(), "it went off before its fuse");
+        assert!(w.players[1].hp < MAX_HP);
+    }
+
+    #[test]
+    fn cluster_shell_flies_through_players() {
+        // Point-blank, the shell used to burst on the enemy and all seven
+        // bomblets went off on them: a one-shot kill. Now it bursts far behind.
+        let mut w = open_world(CLUSTER, (10, 4), (12, 4));
+        fire_once(&mut w, 0, 0, 0.0);
+        for _ in 0..60 {
+            w.step(&[]);
+        }
+        assert_eq!(w.players[1].hp, MAX_HP);
     }
 
     #[test]

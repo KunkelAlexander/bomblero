@@ -38,7 +38,7 @@ struct Pad {
 
 /// One per alcove of `MAP_HUB`, in the middle of the alcove.
 const PADS: [Pad; 3] = [
-    Pad { pos: vec2(240.0, 544.0), label: "PLAY", hint: "against 3 bots" },
+    Pad { pos: vec2(240.0, 544.0), label: "PLAY", hint: "against bots" },
     Pad { pos: vec2(640.0, 544.0), label: "HOST", hint: "open a room for friends" },
     Pad { pos: vec2(1040.0, 544.0), label: "JOIN", hint: "enter a room code" },
 ];
