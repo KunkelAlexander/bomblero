@@ -3,7 +3,7 @@
 // in how it is shown. That is the payoff of "clients only draw a Replica".
 //
 // A frame is drawn in layers, back to front:
-//   floor():   ground, bricks, lights      (lit: the lightmap darkens them)
+//   floor():   ground, ink, bricks, lights (lit: the lightmap darkens them)
 //   ...        anything the caller wants on the floor (the menu's pads and title)
 //   actors():  projectiles, players, effects (unlit: they make their own light)
 //   hud        (on the finished picture, after the glow: see `Glow::ui`)
@@ -16,6 +16,7 @@ use sim::World;
 use crate::draw;
 use crate::effects::Effects;
 use crate::hud;
+use crate::ink::Ink;
 use crate::lights::{self, Light, Lights};
 use crate::net::RateMeter;
 use crate::terrain::Terrain;
@@ -24,6 +25,8 @@ use crate::view::{self, Glow};
 #[derive(Default)]
 pub struct Presenter {
     effects: Effects,
+    /// The splatter on the floor (ink.rs).
+    ink: Ink,
     terrain: Terrain,
     lights: Option<Lights>,
     /// Smoothed time between frames, shown in the HUD so a slow GPU is visible.
@@ -56,8 +59,11 @@ impl Presenter {
         replica.advance(frame);
         for event in replica.drain_events() {
             self.effects.on_event(&event);
+            self.ink.on_event(&event);
         }
         self.effects.update(frame);
+        // Before `glow.begin`: painting the ink points the camera elsewhere.
+        self.ink.paint(&replica.world);
 
         self.terrain.update(&replica.world.map);
         self.frame_ms += (frame * 1000.0 - self.frame_ms) * 0.05;
@@ -70,7 +76,7 @@ impl Presenter {
         let me = &replica.world.players[replica.me as usize];
         view::follow(me.pos, me.aim);
         glow.begin();
-        self.terrain.draw(&replica.world.map, &lights);
+        self.terrain.draw(&replica.world.map, &lights, &self.ink);
         // Created on the first frame: it needs the graphics context.
         self.lights.get_or_insert_with(Lights::new).apply(glow, &replica.world.map, &lights, self.terrain.shine());
     }

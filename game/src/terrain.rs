@@ -28,6 +28,7 @@ use macroquad::prelude::*;
 use sim::tilemap::Tilemap;
 use sim::{Tile, MAP_H, MAP_W, TILE};
 
+use crate::ink::Ink;
 use crate::lights::{Light, LIFT};
 
 const W: usize = MAP_W * TILE as usize;
@@ -69,12 +70,14 @@ impl Terrain {
         self.shine.as_ref()
     }
 
-    pub fn draw(&self, map: &Tilemap, lights: &[Light]) {
+    pub fn draw(&self, map: &Tilemap, lights: &[Light], ink: &Ink) {
         // The ground is painted a lit grey and the lightmap darkens it (lights.rs):
         // a black floor would stay black under any light.
         if let Some(ground) = &self.ground {
             draw_texture(ground, 0.0, 0.0, WHITE);
         }
+        // Ink stains the floor, so it goes on before the bricks rest on it.
+        ink.draw();
         // Shadows first, for all bricks, so a brick's shadow never lands on top
         // of its neighbour.
         for_each_brick(map, |tx, ty, _| draw_shadow(tx, ty));
