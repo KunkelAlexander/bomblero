@@ -42,13 +42,26 @@ pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32
     // One row: weapons left, scores from x=706, status right. Two rows: the
     // scores and status move under the weapons. Three: the status gets its own.
     draw_weapons(world, me);
-    let (scores_x, scores_y) = if l.hud_rows == 1 { (706.0, bar_y) } else { (12.0, bar_y + 50.0) };
+    let (scores_x, scores_y) = match l.hud_rows {
+        1 => (cards_end(world, &l) + 12.0, bar_y),
+        _ => (12.0, bar_y + 50.0),
+    };
     draw_scores(world, me, scores_x, scores_y);
 
-    // Right: the status line, with the network cost under it in the quietest grey.
-    let status_y = bar_y + (l.hud_rows - 1) as f32 * 50.0;
-    right_text(banner, width - 16.0, status_y + 18.0, 18.0, TEXT);
-    right_text(&format!("in {:.1} KB/s   out {:.1} KB/s   {:.1} ms", down / 1024.0, up / 1024.0, frame_ms), width - 16.0, status_y + 38.0, 14.0, TEXT_DIM);
+    // The status line, with the network cost under it in the quietest grey.
+    // Normally at the right of the strip; a narrow one-row strip has no room
+    // left, so it goes to the top left of the arena on a dark plate.
+    let net = format!("in {:.1} KB/s   out {:.1} KB/s   {:.1} ms", down / 1024.0, up / 1024.0, frame_ms);
+    if l.hud_rows == 1 && width < WIDE {
+        let w = measure_text(banner, None, 18, 1.0).width.max(measure_text(&net, None, 14, 1.0).width);
+        draw_rectangle(0.0, 0.0, w + 24.0, 48.0, Color::new(0.03, 0.03, 0.04, 0.7));
+        draw_text(banner, 12.0, 20.0, 18.0, TEXT);
+        draw_text(&net, 12.0, 39.0, 14.0, TEXT_DIM);
+    } else {
+        let status_y = bar_y + (l.hud_rows - 1) as f32 * 50.0;
+        right_text(banner, width - 16.0, status_y + 18.0, 18.0, TEXT);
+        right_text(&net, width - 16.0, status_y + 38.0, 14.0, TEXT_DIM);
+    }
 
     draw_messages(world, me, can_restart, &l);
 }
@@ -67,13 +80,28 @@ fn draw_health(world: &World, me: usize, top: f32, width: f32) {
     }
 }
 
+/// From this width the HUD is the classic desktop strip: scores at a fixed
+/// x=706 and the status line at the right.
+const WIDE: f32 = 1270.0;
+
+/// Where the weapon cards must stop.
+fn cards_end(world: &World, l: &Layout) -> f32 {
+    match l.hud_rows {
+        // The classic strip: before the scores at x=706.
+        1 if l.size.x >= WIDE => 694.0,
+        // A narrow single row: leave room for the scores (58 px a player plus
+        // "first to N").
+        1 => l.size.x - 24.0 - world.players.len() as f32 * 58.0 - 90.0,
+        _ => l.size.x - 12.0,
+    }
+}
+
 /// Where each weapon card sits, in picture coordinates. Shared by drawing and
 /// by `weapon_at`, so a tap always hits what is drawn.
 fn card_rects(world: &World, me: usize) -> Vec<Rect> {
     let l = view::layout();
     let player = &world.players[me];
-    // One HUD row: the cards must stop before the scores at x=706.
-    let end = if l.hud_rows == 1 { 694.0 } else { l.size.x - 12.0 };
+    let end = cards_end(world, &l);
     let n = player.weapons.len() as f32;
     // Compact when there are many weapons or not enough room for full cards;
     // compact cards shrink further on very narrow screens.

@@ -9,7 +9,9 @@
 // the same host, sim and presenter as a real game. "Inputs in, state out" pays
 // off again: the menu is just another client reading a `Replica`.
 //
-// The old keys still work (P, H, J) for anyone who just wants to get going.
+// The old keys still work (P, H, J) for anyone who just wants to get going, and
+// on a touchscreen three big buttons in the bottom strip do the same: walking
+// a thumbstick onto a pad is a fine tutorial, but a poor way to pick a menu item.
 
 use macroquad::prelude::*;
 use protocol::relay::{CODE_ALPHABET, CODE_LEN};
@@ -84,11 +86,17 @@ impl Menu {
         self.hub.advance(input);
 
         let choice = if self.typing.is_some() { self.type_code() } else { self.walk(me) };
-        // The on-screen keypad reports its key while drawing (see `button`).
+        // The on-screen buttons report their taps while drawing (see `button`).
         match self.draw(me, glow) {
-            Some(key) => choice.or_else(|| self.press(key)),
+            Some(Tap::Key(key)) => choice.or_else(|| self.press(key)),
+            Some(Tap::Pad(pad)) => choice.or_else(|| self.pick(pad)),
             None => choice,
         }
+    }
+
+    /// Whether the code entry is up (the thumbsticks do nothing then).
+    pub fn typing(&self) -> bool {
+        self.typing.is_some()
     }
 
     fn walk(&mut self, me: usize) -> Option<Choice> {
@@ -171,7 +179,7 @@ impl Menu {
         None
     }
 
-    fn draw(&mut self, me: usize, glow: &Glow) -> Option<Key> {
+    fn draw(&mut self, me: usize, glow: &Glow) -> Option<Tap> {
         // The pads light their alcoves a little, so you can see where to go.
         let lights: Vec<Light> = PADS.iter().map(|p| Light { pos: p.pos, radius: 120.0, color: Color::new(0.7, 0.85, 1.0, 1.0), strength: 0.45 }).collect();
 
@@ -184,20 +192,27 @@ impl Menu {
         } else {
             center_text("WASD move    mouse aim    click fire    1-0 weapons", 336.0, 26.0, TEXT_DIM);
         }
-        center_text("walk onto a hexagon and stay to choose", 366.0, 26.0, TEXT_DIM);
+        if crate::touch::active() {
+            center_text("tap a button below, or walk onto a hexagon and stay", 366.0, 26.0, TEXT_DIM);
+        } else {
+            center_text("walk onto a hexagon and stay to choose", 366.0, 26.0, TEXT_DIM);
+        }
         for (i, pad) in PADS.iter().enumerate() {
             let progress = if self.on == Some(i) { self.dwell / DWELL } else { 0.0 };
             draw_pad(pad, progress, player_color(me));
         }
         hub.presenter.actors(&hub.game.replica.world);
 
-        let mut key = None;
+        let mut tap = None;
         if let Some(code) = &self.typing {
             glow.overlay();
-            key = draw_code_entry(code);
+            tap = draw_code_entry(code).map(Tap::Key);
+        } else if crate::touch::active() {
+            glow.overlay();
+            tap = draw_pad_buttons().map(Tap::Pad);
         }
         glow.present();
-        key
+        tap
     }
 }
 
@@ -231,6 +246,29 @@ fn draw_pad(pad: &Pad, progress: f32, mine: Color) {
 fn center_at(text: &str, x: f32, y: f32, size: f32, color: Color) {
     let width = measure_text(text, None, size as u16, 1.0).width;
     draw_text(text, x - width / 2.0, y, size, color);
+}
+
+/// Something tapped on an on-screen button.
+enum Tap {
+    Key(Key),
+    Pad(usize),
+}
+
+/// On a touchscreen: one big button per pad, in the strip under the arena
+/// (where a match has its HUD), in reach of the thumbs. Returns the pad tapped.
+fn draw_pad_buttons() -> Option<usize> {
+    let l = view::layout();
+    let top = l.hud_top();
+    draw_rectangle(0.0, top, l.size.x, l.size.y - top, Color::new(0.045, 0.05, 0.06, 1.0));
+    let w = (l.size.x - 24.0 - 2.0 * 12.0) / 3.0;
+    let mut tapped = None;
+    for (i, pad) in PADS.iter().enumerate() {
+        let r = Rect::new(12.0 + i as f32 * (w + 12.0), top + 6.0, w, 44.0);
+        if button(r, pad.label, true, if i == 0 { NEON } else { TEXT }) {
+            tapped = Some(i);
+        }
+    }
+    tapped
 }
 
 /// A key of the code entry, from the keyboard or the on-screen keypad.

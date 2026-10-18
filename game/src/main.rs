@@ -178,10 +178,20 @@ async fn main() {
 
         // Touch controls go on top of the finished picture, in screen pixels.
         if touch::active() {
-            controls.touch.draw();
+            // Stick hints only where the sticks do something.
+            let playing = match &screen {
+                Screen::Menu(menu) => !menu.typing(),
+                Screen::Armory(_) => false,
+                Screen::Hosting(_) | Screen::Joined(_) => true,
+            };
+            controls.touch.draw(playing);
             if !matches!(screen, Screen::Menu(_)) {
                 touch::draw_back_button();
             }
+        }
+        // A phone held upright gets a hint to turn it, over everything else.
+        if touch::wants_landscape() {
+            touch::draw_rotate_hint();
         }
 
         next_frame().await;

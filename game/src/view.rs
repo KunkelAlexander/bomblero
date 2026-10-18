@@ -57,9 +57,10 @@ impl Layout {
 pub fn layout() -> Layout {
     let ui = (screen_width() / WIDTH).min(screen_height() / HEIGHT).max(1.0);
     let size = vec2(screen_width(), screen_height()) / ui;
-    // One row needs the weapon cards, the scores and the status line side by
-    // side; narrower screens stack them.
-    let hud_rows = if size.x >= 1270.0 { 1 } else if size.x >= 640.0 { 2 } else { 3 };
+    // One row fits the weapon cards and the scores side by side (from 820 px
+    // the status line moves to the top left; see hud.rs). A landscape phone
+    // must stay at one row: its height is too precious. Narrower screens stack.
+    let hud_rows = if size.x >= 820.0 { 1 } else if size.x >= 640.0 { 2 } else { 3 };
     Layout { size, ui, hud_rows }
 }
 

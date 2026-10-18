@@ -169,9 +169,10 @@ impl Armory {
     }
 }
 
-/// Where the cards go on this screen. Two columns of five on a wide screen,
-/// filled column by column (the left one holds the arsenal's first five
-/// weapons); one column of ten on a narrow one. Cards shrink to fit the
+/// Where the cards go on this screen. Two columns of five, filled column by
+/// column (the left one holds the arsenal's first five weapons); one column of
+/// ten only on a narrow, tall window. A landscape phone keeps two columns: its
+/// cards get short (name only) but stay big enough to tap. Cards shrink to fit the
 /// height, and a short screen trades the help lines for room.
 struct Cards {
     cols: usize,
@@ -184,7 +185,7 @@ struct Cards {
 impl Cards {
     fn new() -> Cards {
         let size = view::layout().size;
-        let cols = if size.x >= 900.0 { 2 } else { 1 };
+        let cols = if size.x >= 600.0 { 2 } else { 1 };
         let rows = (ARSENAL.len() / cols) as f32;
         let (top, bottom) = if size.y >= 700.0 { (168.0, 130.0) } else { (60.0, 50.0) };
         let w = ((size.x - 60.0 - (cols - 1) as f32 * 40.0) / cols as f32).min(560.0);

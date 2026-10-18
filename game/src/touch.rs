@@ -31,9 +31,50 @@ thread_local! {
     static ACTIVE: Cell<bool> = Cell::new(false);
 }
 
-/// True after a touch, until a key is pressed again.
+/// True on a phone or tablet from the start, and on any device after a touch,
+/// until a key is pressed again.
 pub fn active() -> bool {
     ACTIVE.with(|a| a.get())
+}
+
+/// Is the main pointer a finger (phone, tablet)? Asked of the browser (see
+/// web/device.js); a native build is always a desktop.
+#[cfg(target_arch = "wasm32")]
+pub fn is_touch_device() -> bool {
+    #[link(wasm_import_module = "env")]
+    extern "C" {
+        fn device_is_touch() -> i32;
+    }
+    // SAFETY: a plain JS function without arguments.
+    unsafe { device_is_touch() != 0 }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn is_touch_device() -> bool {
+    false
+}
+
+/// Twin sticks need both thumbs side by side, so phones play in landscape.
+/// In portrait we show a hint instead of a cramped game.
+pub fn wants_landscape() -> bool {
+    is_touch_device() && screen_height() > screen_width()
+}
+
+/// The "turn your device" screen, drawn over everything in screen pixels.
+pub fn draw_rotate_hint() {
+    let (w, h) = (screen_width(), screen_height());
+    draw_rectangle(0.0, 0.0, w, h, Color::new(0.02, 0.02, 0.03, 1.0));
+    let c = vec2(w / 2.0, h * 0.4);
+    let neon = Color::new(0.1, 1.0, 0.95, 1.0);
+    let dim = Color::new(0.45, 0.47, 0.52, 1.0);
+    // A phone upright (dim) and the same phone turned (bright).
+    draw_rectangle_lines(c.x - 70.0, c.y - 45.0, 50.0, 90.0, 3.0, dim);
+    draw_rectangle_lines(c.x - 5.0, c.y - 25.0, 90.0, 50.0, 3.0, neon);
+    draw_circle(c.x + 75.0, c.y, 4.0, neon);
+    for (text, y, size, color) in [("turn your device sideways", h * 0.4 + 100.0, 28.0, WHITE), ("left thumb moves, right thumb aims and fires", h * 0.4 + 136.0, 18.0, dim)] {
+        let width = measure_text(text, None, size as u16, 1.0).width;
+        draw_text(text, (w - width) / 2.0, y, size, color);
+    }
 }
 
 struct Stick {
@@ -53,6 +94,8 @@ impl Stick {
 
 #[derive(Default)]
 pub struct Touch {
+    /// Whether the first `update` has run (it sets the starting mode).
+    started: bool,
     left: Option<Stick>,
     right: Option<Stick>,
     /// Fingers that landed on the HUD this frame (picture coordinates): taps
@@ -64,6 +107,16 @@ impl Touch {
     /// Read the fingers. Call once per frame, on every screen, so a finger
     /// lifted while a menu was up is never left "held".
     pub fn update(&mut self) {
+        if !self.started {
+            self.started = true;
+            ACTIVE.with(|a| a.set(is_touch_device()));
+        }
+        if wants_landscape() {
+            // The rotate hint covers the game; fingers on it are not input.
+            (self.left, self.right) = (None, None);
+            self.taps.clear();
+            return;
+        }
         let touches = touches();
         if !touches.is_empty() {
             ACTIVE.with(|a| a.set(true));
@@ -123,14 +176,32 @@ impl Touch {
     }
 
     /// Draw the sticks over the finished picture, in screen pixels (call after
-    /// `Glow::present`, so they are not blurred or zoomed).
-    pub fn draw(&self) {
-        let ui = view::layout().ui;
-        for stick in [&self.left, &self.right].into_iter().flatten() {
-            let (o, p) = (stick.origin * ui, (stick.origin + stick.push() * RADIUS) * ui);
-            draw_circle(o.x, o.y, RADIUS * ui, Color::new(0.5, 0.9, 1.0, 0.08));
-            draw_circle_lines(o.x, o.y, RADIUS * ui, 2.0, Color::new(0.5, 0.9, 1.0, 0.35));
-            draw_circle(p.x, p.y, 22.0 * ui, Color::new(0.5, 0.9, 1.0, 0.35));
+    /// `Glow::present`, so they are not blurred or zoomed). With `hints`, a
+    /// stick nobody holds is drawn as a faint ghost with a label in its corner,
+    /// so a new player sees that the screen is the controller.
+    pub fn draw(&self, hints: bool) {
+        let l = view::layout();
+        let ui = l.ui;
+        let low = l.hud_top() - RADIUS - 28.0;
+        let homes = [(vec2(RADIUS + 40.0, low), "MOVE"), (vec2(l.size.x - RADIUS - 40.0, low), "AIM + FIRE")];
+        for (stick, (home, label)) in [&self.left, &self.right].into_iter().zip(homes) {
+            match stick {
+                Some(stick) => {
+                    let (o, p) = (stick.origin * ui, (stick.origin + stick.push() * RADIUS) * ui);
+                    draw_circle(o.x, o.y, RADIUS * ui, Color::new(0.5, 0.9, 1.0, 0.08));
+                    draw_circle_lines(o.x, o.y, RADIUS * ui, 2.0, Color::new(0.5, 0.9, 1.0, 0.35));
+                    draw_circle(p.x, p.y, 22.0 * ui, Color::new(0.5, 0.9, 1.0, 0.35));
+                }
+                None if hints => {
+                    let o = home * ui;
+                    draw_circle_lines(o.x, o.y, RADIUS * ui, 2.0, Color::new(0.5, 0.9, 1.0, 0.18));
+                    draw_circle_lines(o.x, o.y, 22.0 * ui, 2.0, Color::new(0.5, 0.9, 1.0, 0.18));
+                    let size = 16.0 * ui;
+                    let width = measure_text(label, None, size as u16, 1.0).width;
+                    draw_text(label, o.x - width / 2.0, o.y + (RADIUS + 18.0) * ui, size, Color::new(0.5, 0.9, 1.0, 0.45));
+                }
+                None => {}
+            }
         }
     }
 }
