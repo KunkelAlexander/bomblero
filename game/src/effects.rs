@@ -107,6 +107,18 @@ impl Effects {
                     self.burst(at, 10, 60.0..180.0, color);
                 }
             }
+            Event::Dashed { player, pos, dir } => {
+                // A puff kicked out behind, in the dasher's colour: it shows
+                // which way they went, and that their dash is now spent.
+                let color = player_color(player as usize);
+                let back = (-dir).y.atan2(-dir.x);
+                for _ in 0..10 {
+                    let a = back + rand::gen_range(-0.6, 0.6);
+                    let vel = vec2(a.cos(), a.sin()) * rand::gen_range(80.0, 220.0);
+                    self.sparks.push(Spark { pos, vel, age: 0.0, life: rand::gen_range(0.15, 0.35), color });
+                }
+                self.ring(pos, 18.0, 0.15, color, 0.3);
+            }
             Event::Cross { pos, arms } => {
                 // The plus is four fat beams, one per arm, so it is exactly as
                 // long as the walls let the blast be.

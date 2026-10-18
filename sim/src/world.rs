@@ -42,6 +42,24 @@ pub const SCORE_LIMIT: i32 = 15;
 /// explosions work as a movement tool without being free.
 const SELF_DAMAGE: f32 = 0.5;
 
+// The dash has no button: let go of the movement keys (or lift the move thumb),
+// then push again, and the first push is a burst of speed. Phones play with two
+// thumbsticks and have no thumb left for a dash button, so the gesture IS the
+// button, and it works the same on a keyboard.
+/// How long the stick must rest before a push counts as a dash. Long enough
+/// that switching from W to D (a gap of a frame or two) never dashes.
+const DASH_REST: f32 = 0.12;
+/// A thumb on a floating stick starts at zero and takes a few frames to reach a
+/// full push, so the push may arrive this long after the rest ends.
+const DASH_WINDOW: f32 = 0.15;
+/// How far the stick must be pushed: enough to show which way you mean.
+const DASH_PUSH: f32 = 0.6;
+/// Speed at the start of a dash. The usual `ACCEL` rule then slows you back
+/// to walking speed within a quarter second, which adds about 1.5 tiles to the
+/// distance travelled: a dodge, not a teleport. Below `MAX_SPEED`.
+const DASH_SPEED: f32 = 850.0;
+const DASH_COOLDOWN: f32 = 1.2;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WeaponState {
     /// Index into `WEAPONS`.
@@ -68,6 +86,12 @@ pub struct Player {
     pub current: usize,
     pub kills: i32,
     pub deaths: i32,
+    /// Seconds the move input has been released (see `DASH_REST`).
+    pub still: f32,
+    /// Seconds left in which a push still counts as a dash (see `DASH_WINDOW`).
+    pub dash_armed: f32,
+    /// Seconds until the next dash is allowed.
+    pub dash_cooldown: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -97,6 +121,8 @@ pub enum Event {
     Died { victim: u8, killer: u8, pos: Vec2 },
     /// `player` jumped from `from` to `to` (the Teleport gun).
     Teleported { player: u8, from: Vec2, to: Vec2 },
+    /// `player` dashed from `pos` in direction `dir`.
+    Dashed { player: u8, pos: Vec2, dir: Vec2 },
     Respawned { player: u8 },
     MatchWon { player: u8 },
 }
@@ -130,6 +156,9 @@ impl World {
                 current: 0,
                 kills: 0,
                 deaths: 0,
+                still: 0.0,
+                dash_armed: 0.0,
+                dash_cooldown: 0.0,
             })
             .collect();
         World {
@@ -208,6 +237,27 @@ impl World {
         let dir = if input.move_dir.is_finite() { input.move_dir.clamp_length_max(1.0) } else { Vec2::ZERO };
         let wanted = dir * MOVE_SPEED;
         p.vel += (wanted - p.vel) * (ACCEL * DT).min(1.0);
+
+        // Dash: resting arms it, pushing uses it up (see `DASH_REST`).
+        p.dash_cooldown = (p.dash_cooldown - DT).max(0.0);
+        let mut dashed = false;
+        if dir.length() < 0.2 {
+            p.still += DT;
+            if p.still >= DASH_REST {
+                p.dash_armed = DASH_WINDOW;
+            }
+        } else {
+            p.still = 0.0;
+            if p.dash_armed > 0.0 && dir.length() >= DASH_PUSH && p.dash_cooldown == 0.0 {
+                // Set, not add: a dash out of a blast's knockback goes where
+                // you point, which is what makes it an escape.
+                p.vel = dir.normalize() * DASH_SPEED;
+                p.dash_armed = 0.0;
+                p.dash_cooldown = DASH_COOLDOWN;
+                dashed = true;
+            }
+            p.dash_armed = (p.dash_armed - DT).max(0.0);
+        }
         p.vel = p.vel.clamp_length_max(MAX_SPEED);
 
         // Move one axis at a time so a player slides along walls instead of
@@ -223,6 +273,10 @@ impl World {
             p.vel.y = 0.0;
         } else {
             p.pos = ny;
+        }
+        if dashed {
+            let (pos, vel) = (p.pos, p.vel);
+            self.events.push(Event::Dashed { player: i as u8, pos, dir: vel.normalize_or_zero() });
         }
 
         if input.fire {
@@ -993,6 +1047,57 @@ mod tests {
         }
         // One second at full speed is at most ~MOVE_SPEED px.
         assert!(w.players[0].vel.length() <= MOVE_SPEED + 1.0);
+    }
+
+    /// One player in the open middle of the menu map, feeding it one move
+    /// input per tick. Returns the fastest speed reached and the dash count.
+    fn run_moves(moves: &[Vec2]) -> (f32, usize) {
+        let mut w = World::new(Tilemap::from_ascii(crate::tilemap::MAP_HUB), 1, &[BLASTER], 1);
+        w.players[0].pos = tile_center(19, 4);
+        let mut top = 0.0f32;
+        for &move_dir in moves {
+            w.step(&[Input { move_dir, ..Default::default() }]);
+            top = top.max(w.players[0].vel.length());
+        }
+        let dashes = w.drain_events().iter().filter(|e| matches!(e, Event::Dashed { .. })).count();
+        (top, dashes)
+    }
+
+    fn ticks(n: usize, v: Vec2) -> Vec<Vec2> {
+        vec![v; n]
+    }
+
+    #[test]
+    fn rest_then_push_is_a_dash() {
+        let moves = [ticks(10, Vec2::ZERO), ticks(5, vec2(1.0, 0.0))].concat();
+        let (top, dashes) = run_moves(&moves);
+        assert_eq!(dashes, 1);
+        assert!(top > MOVE_SPEED * 3.0, "top = {top}");
+    }
+
+    #[test]
+    fn a_slow_thumb_still_dashes() {
+        // A floating stick grows from zero over a few frames.
+        let ramp = [0.3, 0.45, 0.7].map(|x| vec2(x, 0.0));
+        let moves = [ticks(10, Vec2::ZERO), ramp.to_vec()].concat();
+        assert_eq!(run_moves(&moves).1, 1);
+    }
+
+    #[test]
+    fn walking_and_switching_keys_never_dash() {
+        // From a standstill at spawn (no rest yet), then a two-tick gap
+        // between letting go of D and pressing W.
+        let moves = [ticks(30, vec2(1.0, 0.0)), ticks(2, Vec2::ZERO), ticks(30, vec2(0.0, -1.0))].concat();
+        let (top, dashes) = run_moves(&moves);
+        assert_eq!(dashes, 0);
+        assert!(top <= MOVE_SPEED + 1.0);
+    }
+
+    #[test]
+    fn dash_has_a_cooldown() {
+        let tap = [ticks(10, Vec2::ZERO), ticks(5, vec2(1.0, 0.0))].concat();
+        assert_eq!(run_moves(&tap.repeat(2)).1, 1, "15 ticks apart is too soon");
+        assert_eq!(run_moves(&tap.repeat(6)).1, 2, "every ~1.2 s is fine");
     }
 
     #[test]
