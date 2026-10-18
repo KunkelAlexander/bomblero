@@ -87,11 +87,6 @@ fn draw_projectiles(world: &World) {
                 draw_poly_lines(p.pos.x, p.pos.y, 6, 9.0, 0.0, 2.0, DANGER);
                 draw_poly(p.pos.x, p.pos.y, 6, 4.0, 0.0, if lit { WHITE } else { DANGER });
             }
-            sim::weapons::SCATTER => {
-                // Eight of these fly at once, so each is small.
-                draw_poly(p.pos.x, p.pos.y, 4, 3.5, dir.y.atan2(dir.x).to_degrees(), c);
-                draw_poly(p.pos.x, p.pos.y, 4, 1.5, dir.y.atan2(dir.x).to_degrees(), WHITE);
-            }
             sim::weapons::BOUNCER => {
                 // A spinning hollow diamond: it looks like something that bounces.
                 let spin = world.tick as f32 * 6.0;

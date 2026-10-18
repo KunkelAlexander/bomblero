@@ -1,6 +1,6 @@
 // Pattern: Type Object. A "weapon type" is a row of data in a table, not a
 // Rust type. The weapons below behave differently mostly because their
-// numbers differ; the few genuinely new mechanics (a shotgun's several pellets,
+// numbers differ; the few genuinely new mechanics (a swarm's several missiles,
 // a ricochet, a plus-shaped blast) are one flag or number each, read in
 // `world.rs`. More weapons later means more rows, and a little code only for
 // mechanics that are more than a number (`Special`: homing, a cluster burst, a
@@ -12,7 +12,9 @@
 pub const BLASTER: u8 = 0;
 pub const ROCKET: u8 = 1;
 pub const RAILGUN: u8 = 2;
-pub const SCATTER: u8 = 3;
+/// Not a gun: places a brick. It took the shotgun's slot (the Scatter was the
+/// least interesting weapon), so building costs a loadout pick like any weapon.
+pub const BUILD: u8 = 3;
 pub const BOUNCER: u8 = 4;
 pub const BOMB: u8 = 5;
 pub const CLUSTER: u8 = 6;
@@ -24,14 +26,14 @@ pub const BOMBLET: u8 = 10;
 
 /// Every weapon a player can choose from, in the order the loadout screen lists
 /// them. (The menu's shooting range hands out all of them.)
-pub const ARSENAL: [u8; 10] = [BLASTER, SCATTER, ROCKET, BOUNCER, BOMB, RAILGUN, CLUSTER, SWARM, TELEPORT, NOVA];
+pub const ARSENAL: [u8; 10] = [BLASTER, BUILD, ROCKET, BOUNCER, BOMB, RAILGUN, CLUSTER, SWARM, TELEPORT, NOVA];
 
 /// How many weapons a player carries into a match, picked from the arsenal
 /// before it starts (like Liero's weapon menu). Keys 1-5 select them.
 pub const LOADOUT_SIZE: usize = 5;
 
 /// What bots carry, and what the picker starts with.
-pub const DEFAULT_LOADOUT: [u8; LOADOUT_SIZE] = [BLASTER, SCATTER, ROCKET, BOMB, RAILGUN];
+pub const DEFAULT_LOADOUT: [u8; LOADOUT_SIZE] = [BLASTER, BOUNCER, ROCKET, BOMB, RAILGUN];
 
 /// Is this an acceptable choice: the right number of different arsenal weapons?
 /// A loadout arrives from another player's machine, and nothing that comes from
@@ -48,6 +50,9 @@ pub enum Kind {
     Projectile,
     /// Instant line; resolved the moment you pull the trigger.
     Beam,
+    /// Puts a brick on the first free tile along the aim, within `range`.
+    /// The magazine is the number of blocks you carry.
+    Build,
 }
 
 /// The few behaviours that are more than a number. A weapon has at most one, so
@@ -79,7 +84,7 @@ pub struct WeaponDef {
     pub reload: f32,
     /// Random aim error in radians (each side).
     pub spread: f32,
-    /// Beam length in px. Unused by projectiles.
+    /// Beam length (or how far away you can build) in px. Unused by projectiles.
     pub range: f32,
     /// Explosion size in px; 0 means the weapon does not explode.
     pub blast_radius: f32,
@@ -90,7 +95,7 @@ pub struct WeaponDef {
     pub tile_damage: u8,
     /// How many bricks a beam can cut through before it stops.
     pub beam_bricks: u8,
-    /// Projectiles per shot (a shotgun fires many, each with its own spread).
+    /// Projectiles per shot (the swarm fires several, each with its own spread).
     pub pellets: u8,
     /// Does the projectile ricochet off walls instead of stopping at them?
     pub bounce: bool,
@@ -166,22 +171,22 @@ pub static WEAPONS: [WeaponDef; 11] = [
         special: Special::None,
     },
     WeaponDef {
-        name: "Scatter",
-        kind: Kind::Projectile,
-        damage: 9.0,
-        speed: 650.0,
-        lifetime: 0.35, // short life = short range (~230 px)
-        cooldown: 0.8,
+        name: "Block",
+        kind: Kind::Build,
+        damage: 0.0,
+        speed: 0.0,
+        lifetime: 0.0,
+        cooldown: 0.15, // fast enough to throw up a wall in one sweep of the aim
         mag: 6,
-        reload: 1.8,
-        spread: 0.2,
-        range: 0.0,
+        reload: 2.0,
+        spread: 0.0,
+        range: 96.0, // three tiles
         blast_radius: 0.0,
         blast_damage: 0.0,
-        knockback: 45.0,
-        tile_damage: 1,
+        knockback: 0.0,
+        tile_damage: 0,
         beam_bricks: 0,
-        pellets: 8,
+        pellets: 1,
         bounce: false,
         cross: false,
         special: Special::None,

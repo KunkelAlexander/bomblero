@@ -12,7 +12,7 @@ use glam::{vec2, Vec2};
 
 use crate::input::Input;
 use crate::rng::Rng;
-use crate::weapons::{BLASTER, BOUNCER, RAILGUN, ROCKET, SCATTER};
+use crate::weapons::{BLASTER, BOUNCER, RAILGUN, ROCKET};
 use crate::world::World;
 
 pub struct Bot {
@@ -88,11 +88,11 @@ impl Bot {
         input
     }
 
-    /// Prefer the railgun at range, the rocket at mid range, the shotgun up
+    /// Prefer the railgun at range, the rocket at mid range, the blaster up
     /// close, but never pick a weapon that is empty or reloading. The bouncer is
     /// what a bot uses against a target it cannot see: bolts that come round
-    /// corners. Bots never drop bombs: placing one and walking away is a plan,
-    /// and bots do not make plans.
+    /// corners. Bots never drop bombs or build blocks: placing one and walking
+    /// away (or hiding behind it) is a plan, and bots do not make plans.
     fn pick_weapon(&self, world: &World, me: usize, dist: f32, sees: bool) -> u8 {
         let preferred: &[u8] = if !sees {
             &[ROCKET, BOUNCER, RAILGUN, BLASTER]
@@ -101,7 +101,7 @@ impl Bot {
         } else if dist > 150.0 {
             &[ROCKET, BOUNCER, BLASTER, RAILGUN]
         } else {
-            &[SCATTER, BLASTER, ROCKET, RAILGUN]
+            &[BLASTER, BOUNCER, ROCKET, RAILGUN]
         };
         let weapons = &world.players[me].weapons;
         for &id in preferred {

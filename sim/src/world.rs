@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::input::Input;
 use crate::rng::Rng;
-use crate::tilemap::{tile_center, tile_coords, Tile, Tilemap, TILE};
+use crate::tilemap::{tile_center, tile_coords, Tile, Tilemap, BRICK_HP, TILE};
 use crate::weapons::{Kind, Special, WeaponDef, WEAPONS};
 
 pub const DT: f32 = 1.0 / 60.0;
@@ -231,28 +231,44 @@ impl World {
     }
 
     fn try_fire(&mut self, i: usize) {
-        let p = &mut self.players[i];
-        let (pos, aim) = (p.pos, p.aim);
-        let w = &mut p.weapons[p.current];
+        let p = &self.players[i];
+        let (pos, aim, slot) = (p.pos, p.aim, p.current);
+        let w = &p.weapons[slot];
         if w.cooldown > 0.0 || w.reload > 0.0 || w.ammo == 0 {
             return;
         }
-        let def = &WEAPONS[w.id as usize];
         let id = w.id;
+        let def = &WEAPONS[id as usize];
+        let dir = vec2(aim.cos(), aim.sin());
+        // Find the build spot before spending a charge: aiming at a wall
+        // should not cost you a block.
+        let build_at = match def.kind {
+            Kind::Build => match self.build_spot(pos, dir, def.range) {
+                Some(spot) => Some(spot),
+                None => return,
+            },
+            _ => None,
+        };
+
+        let w = &mut self.players[i].weapons[slot];
         w.ammo -= 1;
         w.cooldown = def.cooldown;
         if w.ammo == 0 {
             w.reload = def.reload; // auto-reload as soon as the magazine empties
         }
 
-        let dir = vec2(aim.cos(), aim.sin());
         // A weapon with no speed (the bomb) is dropped at your feet, not thrown.
-        let muzzle = if def.kind == Kind::Projectile && def.speed == 0.0 { pos } else { pos + dir * (PLAYER_RADIUS + 4.0) };
+        // A block "fires" where it appears, so the flash marks the new brick.
+        let muzzle = match build_at {
+            Some((tx, ty)) => tile_center(tx, ty),
+            None if def.kind == Kind::Projectile && def.speed == 0.0 => pos,
+            None => pos + dir * (PLAYER_RADIUS + 4.0),
+        };
         self.events.push(Event::Shot { player: i as u8, weapon: id, pos: muzzle });
 
         match def.kind {
-            // A shotgun is one shot that makes several projectiles, each with
-            // its own random error: the spread is what makes it a shotgun.
+            // A swarm is one shot that makes several projectiles, each with
+            // its own random error.
             Kind::Projectile => {
                 for _ in 0..def.pellets {
                     let angle = aim + self.rng.range(-def.spread, def.spread);
@@ -269,7 +285,41 @@ impl World {
                 let angle = aim + self.rng.range(-def.spread, def.spread);
                 self.fire_beam(i, def, muzzle, vec2(angle.cos(), angle.sin()));
             }
+            // A placed block is an ordinary brick, so it needs no new rules,
+            // drawing or network message: joiners learn about it from the same
+            // `TileChanged` event that reports a destroyed one.
+            Kind::Build => {
+                if let Some((tx, ty)) = build_at {
+                    self.map.set(tx, ty, Tile::Brick(BRICK_HP));
+                    self.events.push(Event::TileChanged { x: tx, y: ty, tile: Tile::Brick(BRICK_HP) });
+                }
+            }
         }
+    }
+
+    /// Where the build tool puts its brick: the first empty tile along the aim,
+    /// within `range`, that no living player touches (a brick on top of someone
+    /// would trap them inside a wall) and that is not a spawn point (or someone
+    /// could wall it up and respawn inside it). A wall on the way ends the
+    /// search: you cannot build on the far side of one.
+    fn build_spot(&self, from: Vec2, dir: Vec2, range: f32) -> Option<(i32, i32)> {
+        let mut d = 0.0;
+        while d <= range {
+            let (tx, ty) = tile_coords(from + dir * d);
+            if self.map.get(tx, ty).blocks() {
+                return None;
+            }
+            let min = vec2(tx as f32 * TILE, ty as f32 * TILE);
+            let occupied = self
+                .players
+                .iter()
+                .any(|p| p.alive && p.pos.clamp(min, min + Vec2::splat(TILE)).distance(p.pos) < PLAYER_RADIUS);
+            if !occupied && !self.map.spawns.contains(&tile_center(tx, ty)) {
+                return Some((tx, ty));
+            }
+            d += 4.0;
+        }
+        None
     }
 
     /// Hitscan: no flying object, the line is resolved instantly.
@@ -523,7 +573,11 @@ impl World {
             _ => {}
         }
         if def.blast_radius > 0.0 {
-            self.explode(pr.pos, def, pr.owner as usize);
+            // A shell that hit a wall is a few pixels inside it. Blow it up on
+            // the side it came from, so the wall it hit is between the blast
+            // and whoever hides behind it.
+            let at = self.free_point(pr.pos, dir, PROJECTILE_RADIUS).unwrap_or(pr.pos);
+            self.explode(at, def, pr.owner as usize);
             return;
         }
         if let Some(v) = victim {
@@ -536,9 +590,11 @@ impl World {
         }
     }
 
-    /// Damage falls off linearly with distance. Blasts also ignore walls (a
-    /// brick does not shield you); that keeps the rule simple and can be
-    /// revisited if it plays badly.
+    /// Damage falls off linearly with distance, and only reaches players who
+    /// can see the blast: walls and bricks are cover. That is what makes a
+    /// built block an answer to a rocket or a Nova. Players are hurt before
+    /// the bricks are, so the brick that a blast destroys still shields you
+    /// from that blast: it absorbs exactly one hit.
     fn explode(&mut self, pos: Vec2, def: &WeaponDef, owner: usize) {
         if def.cross {
             self.explode_cross(pos, def, owner);
@@ -550,7 +606,7 @@ impl World {
             let offset = self.players[v].pos - pos;
             let reach = def.blast_radius + PLAYER_RADIUS;
             let d = offset.length();
-            if !self.players[v].alive || d >= reach {
+            if !self.players[v].alive || d >= reach || !self.map.line_of_sight(pos, self.players[v].pos) {
                 continue;
             }
             let falloff = 1.0 - d / reach;
@@ -636,7 +692,7 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 mod tests {
     use super::*;
     use crate::tilemap::MAP_GRID;
-    use crate::weapons::{ARSENAL, BLASTER, BOMB, BOMBLET, BOUNCER, CLUSTER, NOVA, RAILGUN, ROCKET, SCATTER, SWARM, TELEPORT};
+    use crate::weapons::{ARSENAL, BLASTER, BOMB, BOMBLET, BOUNCER, BUILD, CLUSTER, NOVA, RAILGUN, ROCKET, SWARM, TELEPORT};
 
     // These tests need no window, GPU or sound: the payoff of keeping the sim
     // free of rendering code.
@@ -737,15 +793,51 @@ mod tests {
     }
 
     #[test]
-    fn scatter_fires_a_spread_of_pellets() {
-        let (mut w, slot) = armed_world(SCATTER);
+    fn block_is_built_on_the_first_free_tile_in_front() {
+        let (mut w, slot) = armed_world(BUILD);
+        w.drain_events();
+        // Aim down: our own tile is taken by us, so the block lands one below.
+        w.step(&[Input { fire: true, weapon: slot, aim: std::f32::consts::FRAC_PI_2, ..Default::default() }]);
+        assert_eq!(w.map.get(1, 2), Tile::Brick(BRICK_HP));
+        assert_eq!(w.players[0].weapons[slot as usize].ammo, WEAPONS[BUILD as usize].mag - 1);
+        assert!(w.drain_events().iter().any(|e| matches!(e, Event::TileChanged { x: 1, y: 2, .. })));
+    }
+
+    #[test]
+    fn building_into_a_wall_costs_nothing() {
+        let (mut w, slot) = armed_world(BUILD);
+        w.step(&[Input { fire: true, weapon: slot, aim: std::f32::consts::PI, ..Default::default() }]);
+        assert_eq!(w.players[0].weapons[slot as usize].ammo, WEAPONS[BUILD as usize].mag);
+    }
+
+    #[test]
+    fn a_block_never_traps_a_player() {
+        let (mut w, slot) = armed_world(BUILD);
+        w.players[1].pos = tile_center(2, 1); // standing right in front of us
         w.step(&[Input { fire: true, weapon: slot, ..Default::default() }]);
-        assert_eq!(w.projectiles.len(), 8);
-        for _ in 0..30 {
-            w.step(&[]);
-        }
-        // At 64 px nearly every pellet lands: far more than one blaster bolt.
-        assert!(w.players[1].hp <= MAX_HP - 3.0 * 9.0, "hp = {}", w.players[1].hp);
+        assert_eq!(w.map.get(2, 1), Tile::Empty, "not on top of the enemy");
+        assert_eq!(w.map.get(3, 1), Tile::Brick(BRICK_HP), "but just behind them");
+    }
+
+    #[test]
+    fn a_block_absorbs_one_rocket_blast() {
+        // A rocket fired at a player with a block right in front of them: the
+        // blast is close enough to hurt, but the block is in between.
+        let mut w = World::new(Tilemap::from_ascii(crate::tilemap::MAP_HUB), 2, &[ROCKET], 1);
+        w.players[0].pos = tile_center(20, 4);
+        w.players[1].pos = tile_center(10, 4);
+        w.map.set(11, 4, Tile::Brick(BRICK_HP));
+        let fire_left = |w: &mut World| {
+            w.step(&[Input { fire: true, aim: std::f32::consts::PI, ..Default::default() }]);
+            for _ in 0..90 {
+                w.step(&[]);
+            }
+        };
+        fire_left(&mut w);
+        assert_eq!(w.players[1].hp, MAX_HP, "the block took the whole blast");
+        assert_eq!(w.map.get(11, 4), Tile::Empty, "and was destroyed by it");
+        fire_left(&mut w);
+        assert!(w.players[1].hp < MAX_HP, "so the next rocket gets through");
     }
 
     #[test]

@@ -12,7 +12,7 @@
 
 use macroquad::prelude::*;
 use sim::weapons::{
-    ARSENAL, BLASTER, BOMB, BOUNCER, CLUSTER, LOADOUT_SIZE, NOVA, RAILGUN, ROCKET, SCATTER, SWARM, TELEPORT, WEAPONS,
+    ARSENAL, BLASTER, BOMB, BOUNCER, BUILD, CLUSTER, LOADOUT_SIZE, NOVA, RAILGUN, ROCKET, SWARM, TELEPORT, WEAPONS,
 };
 
 use crate::draw::{button, center_wide, player_color};
@@ -37,7 +37,7 @@ const CARD_GAP: f32 = 10.0;
 fn blurb(id: u8) -> &'static str {
     match id {
         BLASTER => "fast bolts, a big magazine",
-        SCATTER => "shotgun: eight pellets, short range",
+        BUILD => "builds a brick where you aim: cover from blasts",
         ROCKET => "explodes on impact and digs a crater",
         BOUNCER => "ricochets off walls",
         BOMB => "dropped at your feet: a plus-shaped blast",
