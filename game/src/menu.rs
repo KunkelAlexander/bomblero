@@ -31,6 +31,9 @@ use crate::HostGame;
 pub enum Choice {
     Offline,
     Host,
+    /// A room whose match runs on the server, not in this browser. Reached
+    /// with the O key only, for now.
+    HostOnServer,
     Join(String),
 }
 
@@ -125,6 +128,9 @@ impl Menu {
         }
         if is_key_pressed(KeyCode::J) {
             return self.pick(2);
+        }
+        if is_key_pressed(KeyCode::O) {
+            return Some(Choice::HostOnServer);
         }
 
         if compact() {
@@ -226,7 +232,7 @@ impl Menu {
         if crate::touch::active() {
             center_text("tap a button below, or walk onto a hexagon and stay", 366.0, 26.0, TEXT_DIM);
         } else {
-            center_text("walk onto a hexagon and stay to choose", 366.0, 26.0, TEXT_DIM);
+            center_text("walk onto a hexagon and stay to choose     O: room on the server", 366.0, 26.0, TEXT_DIM);
         }
         for (i, pad) in PADS.iter().enumerate() {
             let progress = if self.on == Some(i) { self.dwell / DWELL } else { 0.0 };

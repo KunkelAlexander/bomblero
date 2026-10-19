@@ -5,8 +5,12 @@ edition = "2021"
 
 [dependencies]
 protocol = { path = "../protocol" }
+# For matches the server hosts itself (see src/matches.rs). The relay part
+# (rooms.rs) still uses neither.
+host = { path = "../host" }
+sim = { path = "../sim" }
 axum = { version = "0.7", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 futures-util = "0.3"
 rand = "0.8"
 

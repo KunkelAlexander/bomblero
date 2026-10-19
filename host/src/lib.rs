@@ -6,8 +6,11 @@
 //
 //   * offline / loopback: inside the game process, wired straight to the local
 //     client (today);
-//   * one player's browser, with friends connected through a relay (step 3);
-//   * a dedicated server binary that links this crate (maybe, one day).
+//   * one player's browser, with friends connected through a relay;
+//   * the dedicated server (`server/src/matches.rs`), which links this crate.
+//
+// In the last two, `Session` (session.rs) is the glue between relay peers and
+// player slots, so that code is written once.
 //
 // To make that possible it knows nothing about windows, sockets or clocks. Its
 // whole interface is plain function calls with already-decoded messages:
@@ -24,8 +27,10 @@
 // free, a friend across the internet gets fewer), so it is decided by whoever
 // owns the link, using a `Throttle`.
 
+pub mod session;
 pub mod throttle;
 
+pub use session::Session;
 pub use throttle::Throttle;
 
 use protocol::{ClientMsg, PlayerId, Rules, Snapshot, Welcome};

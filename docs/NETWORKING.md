@@ -173,6 +173,22 @@ If the host leaves, the room closes. It cannot cheat because it knows no rules,
 and it cannot break when the game changes because it never decodes game
 messages.
 
+### Matches the server hosts (the "O" key)
+Press **O** on the menu and the relay does something new: it runs the match
+itself (`server/src/matches.rs`). The creator sends `CreateHostedRoom` with the
+rules and is seated in the room like any joiner; friends use the usual code.
+
+The server needed almost no new machinery. The match task is one more client of
+the room code: it creates a room like a browser host would, but reads its
+messages from a channel instead of a WebSocket, and the logic in between is the
+same `host::Session` the browser host uses (`host/src/session.rs`). Every player
+is now a plain joiner, so nobody has the host's zero-lag advantage, the host's
+wifi and hidden tab no longer matter, and the ping is one leg to the server
+instead of two to the relay. The server restarts the match 8 seconds after
+somebody wins (nobody holds the R key) and closes the room when the last player
+leaves. It runs at most 8 matches at once; a ninth creator gets `ServerBusy`.
+A match costs about 0.1 % of a core.
+
 ## Limits you should know about
 
 * **A hidden host tab freezes the match.** Browsers pause or slow background

@@ -1,13 +1,16 @@
 // The relay server: a thin network shell around `rooms::Rooms`.
 //
-// All it does is turn WebSocket frames into `ToRelay` messages, hand them to
-// `Rooms`, and write whatever `Rooms` queued back out. It runs no game logic.
+// It turns WebSocket frames into `ToRelay` messages, hands them to `Rooms`,
+// and writes whatever `Rooms` queued back out. The relay itself runs no game
+// logic. The one exception is a room the SERVER hosts (`matches.rs`): that
+// match runs here, as one more client of `Rooms`.
 //
 // Why a WebSocket and not raw TCP/UDP: it is the only connection a browser is
 // allowed to open to a server it can reach, and it works through the proxies
 // of free hosting. It is TCP underneath, so frames arrive reliably and in
 // order.
 
+pub mod matches;
 pub mod rooms;
 
 use std::sync::{Arc, Mutex};
@@ -18,7 +21,7 @@ use axum::response::Response;
 use axum::routing::get;
 use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use protocol::decode_to_relay;
+use protocol::{decode_to_relay, ToRelay};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
@@ -27,7 +30,7 @@ use rooms::{Role, Rooms};
 /// One `Rooms` shared by every connection. It is only ever locked for the
 /// duration of a plain function call (never across an `await`), so a simple
 /// std Mutex is enough.
-type Shared = Arc<Mutex<Rooms>>;
+pub(crate) type Shared = Arc<Mutex<Rooms>>;
 
 pub async fn serve(listener: TcpListener) {
     let app = Router::new()
@@ -66,7 +69,12 @@ async fn connection(socket: WebSocket, rooms: Shared) {
         let Message::Binary(bytes) = frame else { continue };
         // Garbage from a client is dropped, never fatal.
         let Some(msg) = decode_to_relay(&bytes) else { continue };
-        rooms.lock().unwrap().handle(&mut role, &tx, msg);
+        match msg {
+            // The one request the relay cannot answer by itself: it starts a
+            // match that runs on this server (see matches.rs).
+            ToRelay::CreateHostedRoom { rules } => matches::start(&rooms, &mut role, &tx, rules),
+            msg => rooms.lock().unwrap().handle(&mut role, &tx, msg),
+        }
     }
 
     // The stream ended: the client closed the tab or lost its connection.

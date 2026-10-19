@@ -106,7 +106,9 @@ cargo test                           # headless tests, no window needed
 ```
 
 Menu: walk onto the **PLAY**, **HOST** or **JOIN** hexagon and stay a moment
-(or press **P**, **H**, **J**).
+(or press **P**, **H**, **J**). **O** opens a room whose match runs on the
+server instead of in your browser (first step of the dedicated server; friends
+join it with **J** and the code as usual).
 
 | Key | Action |
 |---|---|

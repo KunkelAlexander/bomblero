@@ -17,6 +17,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::Rules;
+
 /// How the relay names the connections inside one room. The host is always
 /// `HOST_PEER`; joiners get 1, 2, 3... The relay (not the client) assigns
 /// them, so nobody can forge a "from".
@@ -36,6 +38,13 @@ pub const CODE_ALPHABET: &str = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 pub enum ToRelay {
     /// "Open a room and make me its host."
     CreateRoom,
+    /// "Open a room whose host is the SERVER, and seat me in it." The server
+    /// runs the match itself (`server/src/matches.rs`), so nobody's browser is
+    /// the authority and nobody has a zero-latency advantage. The answer is
+    /// `RoomCreated` (the code to share) followed by `RoomJoined`; after that
+    /// the creator is an ordinary joiner. The rules are chosen by the creator,
+    /// like the setup screen does for a browser-hosted match.
+    CreateHostedRoom { rules: Rules },
     /// "Put me in the room with this code."
     JoinRoom { code: String },
     /// Forward `bytes` to someone in my room.
@@ -74,4 +83,6 @@ pub enum Reject {
     RoomFull,
     /// You already host or have joined a room on this connection.
     AlreadyInRoom,
+    /// The server is already running as many matches as it can afford.
+    ServerBusy,
 }

@@ -35,9 +35,14 @@ struct Room {
 #[derive(Default)]
 pub struct Rooms {
     rooms: HashMap<String, Room>,
+    /// How many of the rooms are matches the server runs itself. Those cost
+    /// CPU (60 sim ticks a second each), unlike a plain room, so they are
+    /// capped (see `matches::MAX_MATCHES`). Kept here because starting and
+    /// ending a match both already hold the lock on `Rooms`.
+    pub hosted_matches: usize,
 }
 
-fn send(tx: &Tx, msg: &FromRelay) {
+pub(crate) fn send(tx: &Tx, msg: &FromRelay) {
     // If the receiver is gone the connection is closing and `leave` will tidy
     // up, so a failed send is not an error worth handling here.
     let _ = tx.send(encode_from_relay(msg));
@@ -57,6 +62,10 @@ impl Rooms {
                 send(tx, &FromRelay::RoomCreated { code: code.clone() });
                 *role = Role::Host { code };
             }
+
+            // Needs a match task, so the connection handler starts it
+            // (`matches::start`); `Rooms` stays plain synchronous code.
+            ToRelay::CreateHostedRoom { .. } => {}
 
             ToRelay::JoinRoom { code } => {
                 if !matches!(role, Role::Lobby) {

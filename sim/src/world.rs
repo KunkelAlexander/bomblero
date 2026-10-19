@@ -1459,7 +1459,7 @@ mod tests {
     fn the_sheep_turns_back_when_the_time_is_up() {
         let mut w = gadget_world();
         fire_once(&mut w, 0, 0, 0.0);
-        for _ in 0..(5.0 / DT) as i32 {
+        for _ in 0..(12.5 / DT) as i32 {
             w.step(&[]);
         }
         assert_eq!(w.players[1].sheep, 0.0);

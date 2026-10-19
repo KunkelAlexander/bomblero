@@ -30,8 +30,8 @@ const BOTS: [usize; 3] = [1, 2, 3];
 const SCORES: [i32; 4] = [5, 10, 15, 25];
 
 /// Everything this screen decides. `rules` go to the host (and from there to
-/// every joiner); `bots` only matter offline, because a room for friends always
-/// has four seats, and bots keep the empty ones warm until friends arrive.
+/// every joiner); `bots` are the opponents offline, and in a room for friends
+/// the seats that friends take over from the bots as they arrive.
 #[derive(Clone, Copy)]
 pub struct Settings {
     pub rules: Rules,
@@ -120,16 +120,19 @@ impl Setup {
             }
         }
 
-        // BOTS: offline only (see `Settings`).
         let s = &mut self.settings;
         row_label("BOTS", spots.bots_y, spots);
-        if matches!(self.choice, Some(Choice::Host)) {
-            draw_text("fill the seats until friends join", spots.options_x, spots.bots_y + spots.row_h / 2.0 + 7.0, 20.0, TEXT_DIM);
-        } else {
-            for (i, &n) in BOTS.iter().enumerate() {
-                if option(spots.option(i, spots.bots_y), &n.to_string(), s.bots == n, mine) {
-                    s.bots = n;
-                }
+        for (i, &n) in BOTS.iter().enumerate() {
+            if option(spots.option(i, spots.bots_y), &n.to_string(), s.bots == n, mine) {
+                s.bots = n;
+            }
+        }
+        if matches!(self.choice, Some(Choice::Host | Choice::HostOnServer)) {
+            // Online the bots are the seats friends take, so say it where the choice is made.
+            let x = spots.option(BOTS.len(), spots.bots_y).x;
+            let hint = "friends take bot seats";
+            if x + measure_text(hint, None, 20, 1.0).width < view::layout().size.x - 12.0 {
+                draw_text(hint, x, spots.bots_y + spots.row_h / 2.0 + 7.0, 20.0, TEXT_DIM);
             }
         }
         row_label("FIRST TO", spots.score_y, spots);

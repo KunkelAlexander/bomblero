@@ -20,7 +20,7 @@
 
 use macroquad::prelude::*;
 use protocol::replica::Replica;
-use protocol::{decode_host, encode_client, ClientMsg, FromRelay, HostMsg, Reject, ToRelay};
+use protocol::{decode_host, encode_client, ClientMsg, FromRelay, HostMsg, Reject, Rules, ToRelay};
 use sim::DT;
 
 use crate::controls::Controls;
@@ -39,7 +39,12 @@ pub struct JoinGame {
     link: RelayLink,
     /// Interpolation on? (Toggled with I, to make the effect visible.)
     interpolate: bool,
+    /// The room to join; for a room we create on the server, filled in when
+    /// the server answers with the code to share.
     code: String,
+    /// `Some` when we ask the server to host a new match instead of joining
+    /// one: the rules we chose on the setup screen.
+    create: Option<Rules>,
     /// The weapons we picked, sent to the host with every `Welcome`.
     loadout: Vec<u8>,
     /// Have we asked the relay to let us in yet? (Only possible once it is open.)
@@ -65,6 +70,7 @@ impl JoinGame {
             link: RelayLink::connect(RELAY_URL),
             interpolate: true,
             code,
+            create: None,
             loadout: loadout.to_vec(),
             asked: false,
             in_room: false,
@@ -77,6 +83,13 @@ impl JoinGame {
             bytes_down: 0,
             presenter: Presenter::default(),
         }
+    }
+
+    /// Open a room on the server (which runs the match) and play in it. From
+    /// then on this is an ordinary joiner: the only difference is the first
+    /// message, and that the server tells us the code our friends need.
+    pub fn hosted(rules: Rules, loadout: &[u8]) -> JoinGame {
+        JoinGame { create: Some(rules), ..JoinGame::new(String::new(), loadout) }
     }
 
     pub fn frame(&mut self, controls: &mut Controls, glow: &Glow) {
@@ -134,7 +147,11 @@ impl JoinGame {
 
         if !self.asked {
             self.asked = true;
-            self.link.send(&ToRelay::JoinRoom { code: self.code.clone() });
+            let request = match self.create {
+                Some(rules) => ToRelay::CreateHostedRoom { rules },
+                None => ToRelay::JoinRoom { code: self.code.clone() },
+            };
+            self.link.send(&request);
         }
 
         while let Some(msg) = self.link.recv() {
@@ -151,6 +168,7 @@ impl JoinGame {
 
     fn on_relay_message(&mut self, msg: FromRelay, now: f64) {
         match msg {
+            FromRelay::RoomCreated { code } => self.code = code,
             FromRelay::RoomJoined => self.in_room = true,
             FromRelay::RoomClosed => self.problem = Some("The host left, so the match is over.".into()),
             FromRelay::Rejected(why) => {
@@ -158,6 +176,7 @@ impl JoinGame {
                     Reject::NoSuchRoom => "No room with that code.".into(),
                     Reject::RoomFull => "That room is full.".into(),
                     Reject::AlreadyInRoom => "Already in a room.".into(),
+                    Reject::ServerBusy => "The server is busy, try again in a minute.".into(),
                 })
             }
             FromRelay::Data { bytes, .. } => {
@@ -187,7 +206,7 @@ impl JoinGame {
                     None => {}
                 }
             }
-            FromRelay::RoomCreated { .. } | FromRelay::PeerJoined(_) | FromRelay::PeerLeft(_) | FromRelay::Pong { .. } => {}
+            FromRelay::PeerJoined(_) | FromRelay::PeerLeft(_) | FromRelay::Pong { .. } => {}
         }
     }
 
@@ -197,7 +216,8 @@ impl JoinGame {
             center_text("Esc: back to the menu", 360.0, 26.0, GRAY);
             return;
         }
-        center_text(&format!("JOINING {}", self.code), 200.0, 40.0, GRAY);
+        let title = if self.create.is_some() { "OPENING A ROOM ON THE SERVER".to_string() } else { format!("JOINING {}", self.code) };
+        center_text(&title, 200.0, 40.0, GRAY);
         if self.link.state() == SocketState::Connecting {
             center_text("Connecting to the relay...", 300.0, 40.0, WHITE);
             center_text("(a free server can take up to a minute to wake up)", 345.0, 22.0, GRAY);

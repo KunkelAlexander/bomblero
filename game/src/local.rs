@@ -23,9 +23,6 @@ use sim::Input;
 use crate::net::Loopback;
 use crate::share::Share;
 
-/// Seats in a room for friends: you + 3 (bots until friends take their seats).
-pub const PLAYER_COUNT: usize = 4;
-
 pub struct LocalGame {
     host: Host,
     link: Loopback,

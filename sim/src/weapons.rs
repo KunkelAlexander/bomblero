@@ -384,7 +384,7 @@ pub static WEAPONS: [WeaponDef; 23] = [
         lifetime: 1.0,
         cooldown: 0.6,
         mag: 2,
-        reload: 4.0, // a sheep cannot shoot for 5 s: that is worth a slow reload
+        reload: 4.0, // a sheep cannot shoot for 12 s: long enough to run, hide or hunt it down
         spread: 0.0,
         range: 0.0,
         blast_radius: 0.0,
@@ -393,7 +393,7 @@ pub static WEAPONS: [WeaponDef; 23] = [
         tile_damage: 0,
         pellets: 1,
         bounce: false,
-        special: Special::Sheep(5.0),
+        special: Special::Sheep(12.0),
     },
     WeaponDef {
         name: "Confuser",

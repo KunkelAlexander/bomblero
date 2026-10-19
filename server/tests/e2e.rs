@@ -5,7 +5,10 @@
 use std::net::TcpStream;
 use std::time::Duration;
 
-use protocol::{decode_from_relay, encode_to_relay, FromRelay, ToRelay};
+use protocol::{
+    decode_from_relay, decode_host, encode_client, encode_to_relay, ClientMsg, FromRelay, HostMsg, Reject, Rules, ToRelay,
+};
+use sim::Input;
 use tungstenite::{connect, stream::MaybeTlsStream, Message, WebSocket};
 
 type Client = WebSocket<MaybeTlsStream<TcpStream>>;
@@ -72,4 +75,60 @@ fn two_clients_talk_through_a_real_relay() {
     // Closing the host's connection must close the room for the friend.
     drop(host);
     assert!(matches!(hear(&mut friend), FromRelay::RoomClosed));
+}
+
+/// Wait for the next game message from the server's match.
+fn hear_host(ws: &mut Client) -> HostMsg {
+    loop {
+        if let FromRelay::Data { from: 0, bytes } = hear(ws) {
+            return decode_host(&bytes).expect("a host message");
+        }
+    }
+}
+
+#[test]
+fn the_server_hosts_a_match_and_ends_it_when_everyone_has_left() {
+    let port = start_relay();
+    let (mut creator, mut friend) = (client(port), client(port));
+
+    // The creator asks for a server-hosted room (with a nonsense map number,
+    // which the server must tame rather than crash on) and is seated in it.
+    say(&mut creator, ToRelay::CreateHostedRoom { rules: Rules { map: 200, score_limit: 5 } });
+    let FromRelay::RoomCreated { code } = hear(&mut creator) else { panic!("no room") };
+    assert!(matches!(hear(&mut creator), FromRelay::RoomJoined));
+    let HostMsg::Welcome(welcome) = hear_host(&mut creator) else { panic!("no Welcome") };
+    assert_eq!(welcome.you, 0);
+    assert!((welcome.rules.map as usize) < sim::tilemap::MAPS.len());
+
+    // Snapshots follow, and the creator's input reaches the server's host.
+    say(&mut creator, ToRelay::Data { to: None, bytes: encode_client(&ClientMsg::Input(Input::default())) });
+    loop {
+        if let HostMsg::Snapshot(s) = hear_host(&mut creator) {
+            if s.tick > 3 {
+                break;
+            }
+        }
+    }
+
+    // A friend joins by code like in any room and gets the next free seat.
+    say(&mut friend, ToRelay::JoinRoom { code: code.clone() });
+    assert!(matches!(hear(&mut friend), FromRelay::RoomJoined));
+    let HostMsg::Welcome(w) = hear_host(&mut friend) else { panic!("no Welcome for the friend") };
+    assert_eq!(w.you, 1);
+
+    // The creator leaves: the match goes on for the friend...
+    drop(creator);
+    assert!(matches!(hear_host(&mut friend), HostMsg::Snapshot(_)));
+
+    // ...and when the friend leaves too, the server closes the room.
+    drop(friend);
+    let mut late = client(port);
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(50));
+        say(&mut late, ToRelay::JoinRoom { code: code.clone() });
+        if matches!(hear(&mut late), FromRelay::Rejected(Reject::NoSuchRoom)) {
+            return;
+        }
+    }
+    panic!("the room is still open");
 }

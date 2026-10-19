@@ -4,30 +4,16 @@
 //   friend's browser ──> relay ──> Share ──> Host::handle(slot, msg)
 //   friend's browser <── relay <── Share <── Host::tick() snapshot
 //
-// `Share` is the "host session": it is the only code that knows both the relay
-// protocol (peers, rooms) and the match (slots). `Host` knows nothing about the
-// relay, and the relay knows nothing about the match. If the host role ever
-// moves to a dedicated server, this file moves with it and `Host` is untouched.
+// `Share` is only the WebSocket around a `host::Session`, which holds the
+// table between relay peers and match slots (and is shared with the dedicated
+// server). `Host` knows nothing about the relay, and the relay knows nothing
+// about the match.
 
-use std::collections::HashMap;
-
-use host::{Host, Throttle};
-use protocol::relay::PeerId;
-use protocol::{decode_client, encode_host, ClientMsg, FromRelay, HostMsg, PlayerId, Snapshot, ToRelay};
+use host::{Host, Session};
+use protocol::{FromRelay, Snapshot, ToRelay};
 
 use crate::net::{RelayLink, RELAY_URL};
 use crate::socket::SocketState;
-
-/// Send friends a snapshot every N sim ticks: 2 = 30 per second.
-///
-/// The trade-off, in numbers (4 players, ~350 bytes per snapshot):
-///   1 -> 60/s -> ~21 KB/s of host upload, friends see 60 Hz steps
-///   2 -> 30/s -> ~10 KB/s,                friends see 30 Hz steps
-///   3 -> 20/s -> ~7 KB/s,                 friends see 20 Hz steps (visibly choppy)
-/// 30 is the usual compromise; interpolation (next step) hides the steps.
-/// Only the link to friends is throttled: the host's own player is wired in
-/// memory and keeps all 60.
-const SEND_EVERY: u32 = 2;
 
 /// Ping the relay this often (in host ticks: 20 s). A host alone in its room
 /// would otherwise send nothing at all, and an idle WebSocket is cut by the
@@ -38,14 +24,11 @@ const KEEPALIVE_TICKS: u32 = 20 * 60;
 
 pub struct Share {
     link: RelayLink,
-    throttle: Throttle,
+    session: Session,
     ticks_since_ping: u32,
     /// Have we asked the relay for a room yet? (Only possible once it is open.)
     asked: bool,
     code: Option<String>,
-    /// Which player slot each friend got. The relay numbers connections
-    /// (`PeerId`), the match numbers players (`PlayerId`); this is the bridge.
-    peers: HashMap<PeerId, PlayerId>,
     problem: Option<String>,
     /// What really crossed the network, for the HUD. Only payloads are
     /// counted, not the relay's small envelope around them.
@@ -59,11 +42,10 @@ impl Share {
     pub fn open() -> Share {
         Share {
             link: RelayLink::connect(RELAY_URL),
-            throttle: Throttle::new(SEND_EVERY),
+            session: Session::new(),
             ticks_since_ping: 0,
             asked: false,
             code: None,
-            peers: HashMap::new(),
             problem: None,
             bytes_up: 0,
             bytes_down: 0,
@@ -76,7 +58,7 @@ impl Share {
             return problem.clone();
         }
         match &self.code {
-            Some(code) => format!("room {code}  -  friends: {}", self.peers.len()),
+            Some(code) => format!("room {code}  -  friends: {}", self.session.friends()),
             None => "opening a room...".into(),
         }
     }
@@ -87,10 +69,7 @@ impl Share {
         match self.link.state() {
             SocketState::Connecting => return,
             SocketState::Closed => {
-                // The relay is gone, so every friend is too: bots take their slots.
-                for (_, slot) in self.peers.drain() {
-                    host.leave(slot);
-                }
+                self.session.drop_everyone(host);
                 self.code = None;
                 if self.problem.is_none() {
                     self.problem = Some(format!("lost the relay ({RELAY_URL}); playing offline"));
@@ -114,76 +93,37 @@ impl Share {
         while let Some(msg) = self.link.recv() {
             match msg {
                 FromRelay::RoomCreated { code } => self.code = Some(code),
-                FromRelay::PeerJoined(peer) => self.welcome(host, peer),
-                FromRelay::PeerLeft(peer) => {
-                    if let Some(slot) = self.peers.remove(&peer) {
-                        host.leave(slot);
+                msg => {
+                    if let FromRelay::Data { bytes, .. } = &msg {
+                        self.bytes_down += bytes.len() as u64;
+                    }
+                    for out in self.session.on_relay(host, msg) {
+                        self.send(out);
                     }
                 }
-                FromRelay::Data { from, bytes } => self.on_data(host, from, bytes),
-                // Messages that only a joiner gets.
-                FromRelay::RoomJoined | FromRelay::RoomClosed | FromRelay::Rejected(_) | FromRelay::Pong { .. } => {}
             }
         }
     }
 
-    /// Offer this tick's snapshot to the friends; every `SEND_EVERY`-th one
-    /// really goes out. One `Data { to: None }` message: the relay copies it
-    /// to everybody, so the host uploads each snapshot once no matter how many
-    /// friends there are.
+    /// Offer this tick's snapshot to the friends (see `Session::broadcast`).
     pub fn broadcast(&mut self, snapshot: Snapshot) {
-        if self.peers.is_empty() {
-            // Nobody listening: do not spend upload on it. Also forget the
-            // events held back for them. They are older than whatever a future
-            // joiner's `Welcome` will say, and replaying them would undo it.
-            self.throttle = Throttle::new(SEND_EVERY);
-            return;
+        if let Some(out) = self.session.broadcast(snapshot) {
+            self.send(out);
         }
-        let Some(snapshot) = self.throttle.push(snapshot) else { return };
-        let bytes = encode_host(&HostMsg::Snapshot(snapshot));
-        self.bytes_up += bytes.len() as u64;
-        self.link.send(&ToRelay::Data { to: None, bytes });
     }
 
     /// The host started a new `Host` (rematch): every friend needs a fresh
     /// `Welcome` for the new match, exactly like a late joiner.
     pub fn welcome_again(&mut self, host: &mut Host) {
-        let peers: Vec<PeerId> = self.peers.keys().copied().collect();
-        self.peers.clear();
-        // Events held back from the old match must not leak into the new one.
-        self.throttle = Throttle::new(SEND_EVERY);
-        for peer in peers {
-            self.welcome(host, peer);
+        for out in self.session.welcome_again(host) {
+            self.send(out);
         }
     }
 
-    /// A friend arrived: give them a slot and the full state of the match.
-    fn welcome(&mut self, host: &mut Host, peer: PeerId) {
-        match host.join() {
-            Some(welcome) => {
-                self.peers.insert(peer, welcome.you);
-                self.send_to(peer, &HostMsg::Welcome(welcome));
-            }
-            None => self.send_to(peer, &HostMsg::Full),
+    fn send(&mut self, msg: ToRelay) {
+        if let ToRelay::Data { bytes, .. } = &msg {
+            self.bytes_up += bytes.len() as u64;
         }
-    }
-
-    fn on_data(&mut self, host: &mut Host, from: PeerId, bytes: Vec<u8>) {
-        self.bytes_down += bytes.len() as u64;
-        // `from` was stamped by the relay and the slot comes from OUR table,
-        // never from the message, so a friend cannot act as another player.
-        // Someone without a slot (the match was full) is ignored.
-        let Some(&slot) = self.peers.get(&from) else { return };
-        match decode_client(&bytes) {
-            Some(ClientMsg::Ping { token }) => self.send_to(from, &HostMsg::Pong { token }),
-            Some(msg) => host.handle(slot, msg),
-            None => {} // garbage is dropped, never fatal
-        }
-    }
-
-    fn send_to(&mut self, peer: PeerId, msg: &HostMsg) {
-        let bytes = encode_host(msg);
-        self.bytes_up += bytes.len() as u64;
-        self.link.send(&ToRelay::Data { to: Some(peer), bytes });
+        self.link.send(&msg);
     }
 }

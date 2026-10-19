@@ -77,8 +77,10 @@ struct HostGame {
 
 impl HostGame {
     fn new(open_room: bool, loadout: &[u8], settings: Settings) -> HostGame {
-        // A room for friends always has every seat; offline, you and your bots.
-        let slots = if open_room { local::PLAYER_COUNT } else { 1 + settings.bots };
+        // You plus the bots. In a room for friends the bots are the seats the
+        // friends will take (`Host::join` swaps a bot out), so it is also the
+        // most friends that fit.
+        let slots = 1 + settings.bots;
         let mut game = LocalGame::new(new_seed(), loadout, slots, settings.rules);
         if open_room {
             game.open_room();
@@ -183,6 +185,7 @@ async fn main() {
                     next = Some(match choice {
                         Choice::Offline => Screen::Hosting(HostGame::new(false, &picked, settings)),
                         Choice::Host => Screen::Hosting(HostGame::new(true, &picked, settings)),
+                        Choice::HostOnServer => Screen::Joined(JoinGame::hosted(settings.rules, &picked)),
                         Choice::Join(code) => Screen::Joined(JoinGame::new(code, &picked)),
                     });
                     loadout = picked;
