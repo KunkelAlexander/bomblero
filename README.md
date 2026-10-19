@@ -3,7 +3,7 @@
 **Bomblero** is a fast top-down arena shooter in a dark neon cave: blast the
 bricks, dodge the bombs, and be the first to 15 kills. It is written in Rust
 with [macroquad](https://macroquad.rs), runs in the browser (WASM) and
-natively, and you can play it online with friends through a room code.
+natively, and you can play it online with friends through a room code. 
 
 It uses **no external assets**: graphics are procedural shapes plus a glow
 shader, and sounds will be synthesized in code.
