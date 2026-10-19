@@ -23,6 +23,10 @@
   <canvas id="glcanvas" tabindex="1"></canvas>
   <!-- gl.js is miniquad's JS glue (copied from the miniquad crate) -->
   <script src="gl.js"></script>
+  <!-- audio.js is quad-snd's Web Audio glue (copied from the quad-snd crate); sound.js
+       makes sure the browser lets it play, also on phones (see game/src/audio.rs) -->
+  <script src="audio.js"></script>
+  <script src="sound.js"></script>
   <!-- net.js gives the game a WebSocket (see game/src/socket.rs) -->
   <script src="net.js"></script>
   <!-- device.js tells the game whether it runs on a phone (see game/src/touch.rs) -->

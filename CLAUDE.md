@@ -85,6 +85,7 @@ Top-down, real-time arena shooter ("Bomberman meets Liero") in a neon style. Rus
 - Relay server: `cargo run -p server --release` (port 9001, or $PORT). The game connects to `ws://127.0.0.1:9001/ws` unless built with `RELAY_URL=wss://...`.
 - Deploy: see `docs/DEPLOY.md` (relay on Render/Fly via `server/Dockerfile`, game on GitHub Pages; `RELAY_URL` is a build-time setting). How the netcode works: `docs/NETWORKING.md`.
 - Tests: `cargo test` (sim, protocol and host tests are headless: no window or GPU needed)
+- Sound: `game/src/synth.rs` (effects as `Layer` rows), `music.rs` (the punk loop: chords + lead + drums) and `audio.rs` (events -> sounds, mute: M key or the speaker button) make every sound in code and play it through macroquad's `audio` feature; `web/audio.js` (copied from quad-snd) and `web/sound.js` (autoplay unlock) are its browser half, and `.cargo/config.toml` holds the wasm linker flag quad-snd needs. To listen without starting the game: `cargo test -p game dump -- --ignored` writes WAVs to `target/audio/`.
 
 ## Plan
 The full approved plan (decisions, weapon list, milestones M0–M5) is in `PLAN.md`.

@@ -13,6 +13,7 @@ use macroquad::prelude::*;
 use protocol::replica::Replica;
 use sim::World;
 
+use crate::audio;
 use crate::draw;
 use crate::effects::Effects;
 use crate::hud;
@@ -69,7 +70,9 @@ impl Presenter {
         // Move the replica's playhead on by one frame of real time (see
         // `Replica`), then show what is due.
         replica.advance(frame);
+        let (me, listener) = (replica.me, replica.world.players[replica.me as usize].pos);
         for event in replica.drain_events() {
+            audio::on_event(&event, me, listener);
             self.effects.on_event(&event);
             self.ink.on_event(&event);
         }

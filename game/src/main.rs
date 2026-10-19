@@ -12,6 +12,7 @@
 // nothing else changes.
 
 mod armory;
+mod audio;
 mod controls;
 mod draw;
 mod effects;
@@ -21,12 +22,14 @@ mod join;
 mod lights;
 mod local;
 mod menu;
+mod music;
 mod net;
 mod present;
 mod setup;
 mod share;
 mod shaders;
 mod socket;
+mod synth;
 mod terrain;
 mod touch;
 mod view;
@@ -173,11 +176,15 @@ async fn main() {
     let mut loadout = sim::weapons::DEFAULT_LOADOUT.to_vec();
     // The same for the match setup.
     let mut settings = Settings::default();
+    // Sound is made in the background; the game is silent until it is ready.
+    audio::start();
 
     loop {
         // Esc leaves any screen for the menu (the menu itself uses Esc to
         // back out of typing a code). Dropping a screen closes its socket.
         controls.touch.update();
+        // M mutes, except while a room code is being typed (M is one of its letters).
+        audio::frame(matches!(&screen, Screen::Menu(menu) if !menu.walkable()));
         if (is_key_pressed(KeyCode::Escape) || touch::back_pressed()) && !matches!(screen, Screen::Menu(_)) {
             screen = Screen::Menu(Menu::new());
         }
@@ -262,6 +269,7 @@ async fn main() {
                 touch::draw_back_button();
             }
         }
+        audio::draw_button();
         // A phone held upright gets a hint to turn it, over everything else.
         if touch::wants_landscape() {
             touch::draw_rotate_hint();

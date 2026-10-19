@@ -1,0 +1,10 @@
+# Browser build only.
+#
+# quad-snd (macroquad's sound crate) declares its JavaScript functions
+# (`audio_play_buffer` and friends, provided by web/audio.js) as plain `extern`
+# functions. Current Rust refuses to link a wasm program with functions nobody
+# defines. This flag lets them through as imports from the page, which is what
+# they are: the browser supplies them when it loads the .wasm. The price: a
+# misspelled import now fails when the page loads instead of when it is built.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--allow-undefined"]
