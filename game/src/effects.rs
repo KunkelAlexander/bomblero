@@ -119,6 +119,16 @@ impl Effects {
                 }
                 self.ring(pos, 18.0, 0.15, color, 0.3);
             }
+            Event::Status { weapon, pos, .. } => {
+                // A puff in the colour of the spell: wool-white or dizzy violet.
+                let color = if weapon == sim::weapons::SHEEP { Color::new(1.0, 0.85, 0.95, 1.0) } else { Color::new(0.8, 0.4, 1.0, 1.0) };
+                self.ring(pos, 34.0, 0.4, color, 0.4);
+                self.burst(pos, 14, 60.0..200.0, color);
+            }
+            Event::Reflected { pos } => {
+                self.ring(pos, 22.0, 0.25, WHITE, 0.5);
+                self.burst(pos, 8, 100.0..260.0, WHITE);
+            }
             Event::Hit { victim, pos, .. } => {
                 self.ring(pos, 20.0, 0.2, WHITE, 0.0);
                 self.burst(pos, 6, 60.0..160.0, player_color(victim as usize));

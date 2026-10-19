@@ -47,6 +47,9 @@ impl Presenter {
 
         self.floor(replica, &[], glow);
         self.actors(&replica.world);
+        // A confused player sees the arena mirrored (the Confuser).
+        let me = &replica.world.players[replica.me as usize];
+        view::mirror(me.alive && me.confused > 0.0);
         glow.present();
         // The HUD goes on the finished picture: its text must stay crisp.
         glow.ui();

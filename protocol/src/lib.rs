@@ -27,7 +27,7 @@ pub mod replica;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 pub use relay::{FromRelay, Reject, ToRelay};
-use sim::{Event, Input, Player, Projectile, Tile};
+use sim::{Deployable, Event, Input, Player, Projectile, Tile};
 
 /// Which player slot a connection controls. The host decides it, never the
 /// client (otherwise a client could claim to be someone else).
@@ -102,6 +102,9 @@ pub struct Snapshot {
     pub tick: u32,
     pub players: Vec<Player>,
     pub projectiles: Vec<Projectile>,
+    /// Mirror panes and oil puddles. They are state, not events: a puddle must
+    /// show for as long as it lasts, also for someone who joins while it is there.
+    pub deployables: Vec<Deployable>,
     pub winner: Option<u8>,
     /// Events since the last snapshot. Clients turn them into explosions and
     /// sounds, and apply `TileChanged` to their copy of the map.

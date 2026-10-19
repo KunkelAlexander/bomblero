@@ -6,6 +6,7 @@
 // at the top of effects.rs.
 
 use macroquad::prelude::*;
+use sim::weapons::Special;
 use sim::world::MAX_HP;
 use sim::{World, PLAYER_RADIUS, WEAPONS};
 
@@ -24,8 +25,54 @@ pub const DANGER: Color = Color::new(1.0, 0.55, 0.1, 1.0);
 /// Draws the actors. The presenter draws the terrain first (terrain.rs) and
 /// lights it (lights.rs) before this, so the actors are never darkened.
 pub fn draw_world(world: &World, t: f32) {
+    draw_deployables(world, t);
     draw_projectiles(world);
     draw_players(world, t);
+}
+
+/// Oil puddles (flat on the floor, so first) and mirror panes.
+fn draw_deployables(world: &World, t: f32) {
+    for d in &world.deployables {
+        let c = player_color(d.owner as usize);
+        match WEAPONS[d.weapon as usize].special {
+            Special::Slick(radius, seconds) => {
+                // It spreads out in a quarter second, and fades away in its last one.
+                let spread = ((seconds - d.life) / 0.25).min(1.0);
+                let fade = d.life.min(1.0);
+                let r = radius * (1.0 - (1.0 - spread) * (1.0 - spread));
+                // A blob, not a circle: five overlapping discs whose offsets
+                // come from the puddle's position, so each one has its own shape.
+                let seed = d.pos.x * 0.37 + d.pos.y * 0.61;
+                let oil = Color::new(0.02, 0.02, 0.05, 0.8 * fade);
+                draw_circle(d.pos.x, d.pos.y, r * 0.8, oil);
+                for k in 0..5 {
+                    let a = seed + k as f32 * 1.26;
+                    draw_circle(d.pos.x + a.cos() * r * 0.3, d.pos.y + a.sin() * r * 0.3, r * 0.6, oil);
+                }
+                // The rainbow sheen of oil: thin rings that slowly turn.
+                for (k, color) in [(0.0, (0.1, 1.0, 0.95)), (2.1, (1.0, 0.2, 0.8)), (4.2, (0.6, 1.0, 0.2))] {
+                    let a = t * 0.5 + k;
+                    draw_arc(d.pos.x, d.pos.y, 24, r * (0.45 + 0.1 * k), a.to_degrees(), 2.0, 70.0, Color::new(color.0, color.1, color.2, 0.5 * fade));
+                }
+            }
+            Special::Mirror(half, seconds) => {
+                // Dim and blinking when about to vanish.
+                let dying = d.life < 1.0 && (t * 14.0) as i32 % 2 == 0;
+                let alpha = if dying { 0.35 } else { 1.0 };
+                let (normal, along) = (vec2(d.angle.cos(), d.angle.sin()), vec2(-d.angle.sin(), d.angle.cos()));
+                let (a, b) = (d.pos + along * half, d.pos - along * half);
+                // A pane of glass: a faint body, a pale core, the owner's colour
+                // as the edge, and a glint that sweeps along it.
+                draw_line(a.x, a.y, b.x, b.y, 7.0, Color::new(c.r, c.g, c.b, 0.3 * alpha));
+                draw_line(a.x, a.y, b.x, b.y, 2.5, Color::new(0.85 + 0.15 * c.r, 0.9 + 0.1 * c.g, 1.0, alpha));
+                let glint = d.pos + along * half * (((t * 1.5 + seconds - d.life).rem_euclid(1.0)) * 2.0 - 1.0);
+                draw_line(glint.x - normal.x * 5.0, glint.y - normal.y * 5.0, glint.x + normal.x * 5.0, glint.y + normal.y * 5.0, 2.0, Color::new(1.0, 1.0, 1.0, 0.9 * alpha));
+                draw_circle(a.x, a.y, 3.0, Color::new(c.r, c.g, c.b, alpha));
+                draw_circle(b.x, b.y, 3.0, Color::new(c.r, c.g, c.b, alpha));
+            }
+            _ => {}
+        }
+    }
 }
 
 fn draw_projectiles(world: &World) {
@@ -87,6 +134,29 @@ fn draw_projectiles(world: &World) {
                 draw_poly_lines(p.pos.x, p.pos.y, 6, 9.0, 0.0, 2.0, DANGER);
                 draw_poly(p.pos.x, p.pos.y, 6, 4.0, 0.0, if lit { WHITE } else { DANGER });
             }
+            sim::weapons::SHEEP => {
+                // A puff of wool with a pink heart.
+                for k in 0..5 {
+                    let a = k as f32 * 1.2566 + world.tick as f32 * 0.2;
+                    draw_circle(p.pos.x + a.cos() * 3.0, p.pos.y + a.sin() * 3.0, 3.2, WHITE);
+                }
+                draw_circle(p.pos.x, p.pos.y, 2.4, Color::new(1.0, 0.55, 0.7, 1.0));
+            }
+            sim::weapons::CONFUSER => {
+                // Three dots chasing each other round a core: it looks dizzy.
+                let spin = world.tick as f32 * 0.5;
+                for k in 0..3 {
+                    let a = spin + k as f32 * std::f32::consts::TAU / 3.0;
+                    draw_circle(p.pos.x + a.cos() * 5.5, p.pos.y + a.sin() * 5.5, 2.2, c);
+                }
+                draw_circle(p.pos.x, p.pos.y, 2.0, WHITE);
+            }
+            sim::weapons::OIL => {
+                // A dark can with an oily rainbow rim.
+                draw_circle(p.pos.x, p.pos.y, 5.5, Color::new(0.02, 0.02, 0.05, 1.0));
+                draw_circle_lines(p.pos.x, p.pos.y, 5.5, 1.5, Color::new(0.1, 1.0, 0.95, 1.0));
+                draw_circle_lines(p.pos.x, p.pos.y, 3.5, 1.0, Color::new(1.0, 0.2, 0.8, 1.0));
+            }
             sim::weapons::BOUNCER => {
                 // A spinning hollow diamond: it looks like something that bounces.
                 let spin = world.tick as f32 * 6.0;
@@ -124,23 +194,51 @@ fn draw_players(world: &World, t: f32) {
         // shape and one corner always points where you aim, so facing reads
         // even before you look at the wedge.
         let turn = p.aim.to_degrees();
-        draw_poly(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, Color::new(c.r * 0.2, c.g * 0.2, c.b * 0.2, 1.0));
-        draw_poly_lines(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, 2.5, c);
-        // A paler line down the middle of the outline makes it a lit neon
-        // tube, like the title: the glow around it stays in the player's colour.
-        draw_poly_lines(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, 1.0, Color::new(0.4 * c.r + 0.6, 0.4 * c.g + 0.6, 0.4 * c.b + 0.6, 1.0));
-        draw_poly(p.pos.x, p.pos.y, 6, PLAYER_RADIUS * 0.6, turn, c);
-        draw_circle(p.pos.x, p.pos.y, PLAYER_RADIUS * 0.25, WHITE);
-        // A filled wedge past the body says which way you are facing.
-        let dir = vec2(p.aim.cos(), p.aim.sin());
-        let (base, tip, side) = (p.pos + dir * (PLAYER_RADIUS + 3.0), p.pos + dir * (PLAYER_RADIUS + 13.0), vec2(-dir.y, dir.x) * 5.0);
-        draw_triangle(base + side, base - side, tip, c);
+        if p.sheep > 0.0 {
+            draw_sheep(p, c, t);
+        } else {
+            draw_poly(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, Color::new(c.r * 0.2, c.g * 0.2, c.b * 0.2, 1.0));
+            draw_poly_lines(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, 2.5, c);
+            // A paler line down the middle of the outline makes it a lit neon
+            // tube, like the title: the glow around it stays in the player's colour.
+            draw_poly_lines(p.pos.x, p.pos.y, 6, PLAYER_RADIUS + 1.0, turn, 1.0, Color::new(0.4 * c.r + 0.6, 0.4 * c.g + 0.6, 0.4 * c.b + 0.6, 1.0));
+            draw_poly(p.pos.x, p.pos.y, 6, PLAYER_RADIUS * 0.6, turn, c);
+            draw_circle(p.pos.x, p.pos.y, PLAYER_RADIUS * 0.25, WHITE);
+            // A filled wedge past the body says which way you are facing.
+            let dir = vec2(p.aim.cos(), p.aim.sin());
+            let (base, tip, side) = (p.pos + dir * (PLAYER_RADIUS + 3.0), p.pos + dir * (PLAYER_RADIUS + 13.0), vec2(-dir.y, dir.x) * 5.0);
+            draw_triangle(base + side, base - side, tip, c);
+        }
+        if p.confused > 0.0 {
+            // Stars circling the head, the cartoon sign for "dizzy".
+            for k in 0..3 {
+                let a = t * 6.0 + k as f32 * std::f32::consts::TAU / 3.0;
+                let at = p.pos + vec2(a.cos() * 13.0, -11.0 + a.sin() * 4.0);
+                draw_poly(at.x, at.y, 4, 3.0, 45.0, Color::new(1.0, 0.9, 0.3, 1.0));
+            }
+        }
 
         let w = 26.0;
-        let (x, y) = (p.pos.x - w / 2.0, p.pos.y - PLAYER_RADIUS - 9.0);
+        let (x, y) = (p.pos.x - w / 2.0, p.pos.y - p.hit_radius() - 9.0);
         draw_line(x, y, x + w, y, 3.0, Color::new(c.r, c.g, c.b, 0.2));
         draw_line(x, y, x + w * p.hp / MAX_HP, y, 3.0, c);
     }
+}
+
+/// A player turned into a sheep: a cloud of wool, a dark face where they look,
+/// and a ring in their own colour so you still know whose it is.
+fn draw_sheep(p: &sim::Player, c: Color, t: f32) {
+    let dir = vec2(p.aim.cos(), p.aim.sin());
+    // The wool bobs a little, faster when it runs.
+    let bob = (t * 14.0).sin() * (p.vel.length() / 330.0).min(1.0);
+    for k in 0..6 {
+        let a = k as f32 * std::f32::consts::TAU / 6.0;
+        draw_circle(p.pos.x + a.cos() * 4.0, p.pos.y + a.sin() * 4.0 + bob, 4.6, WHITE);
+    }
+    draw_circle(p.pos.x, p.pos.y + bob, 4.6, WHITE);
+    let head = p.pos + dir * 8.0;
+    draw_circle(head.x, head.y, 3.0, Color::new(0.12, 0.1, 0.12, 1.0));
+    draw_circle_lines(p.pos.x, p.pos.y + bob, 9.5, 1.5, c);
 }
 
 pub fn center_text(text: &str, y: f32, size: f32, color: Color) {

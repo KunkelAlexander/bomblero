@@ -22,4 +22,4 @@ pub use glam::{vec2, Vec2};
 pub use input::Input;
 pub use tilemap::{Tile, Tilemap, MAP_H, MAP_W, TILE};
 pub use weapons::{WEAPONS, WeaponDef};
-pub use world::{Event, Player, Projectile, World, DT, PLAYER_RADIUS};
+pub use world::{Deployable, Event, Player, Projectile, World, DT, PLAYER_RADIUS};

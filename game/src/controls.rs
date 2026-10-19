@@ -79,7 +79,12 @@ impl Controls {
         // fakes a mouse from the first finger, which would aim at the move
         // thumb, so the mouse is ignored entirely while touch is in use.
         if touch::active() {
-            (aim, fire) = self.touch.aim().unwrap_or((player.aim, false));
+            (aim, fire) = match self.touch.aim() {
+                // The stick points across the screen; on a flipped picture the
+                // world direction is the mirror image (see `view::mirror`).
+                Some((a, fire)) => (if view::mirrored() { std::f32::consts::PI - a } else { a }, fire),
+                None => (player.aim, false),
+            };
         }
 
         self.seq += 1;

@@ -86,6 +86,10 @@ thread_local! {
     static SHOWN: Cell<Rect> = Cell::new(Rect::new(0.0, -TOP_MARGIN, WIDTH, HEIGHT));
     // The current (smoothed) look-ahead offset, in world pixels.
     static LOOK: Cell<Vec2> = Cell::new(Vec2::ZERO);
+    // Whether the next `present` flips the picture (see `mirror`), and whether
+    // the one shown last frame was flipped (for `screen_to_world`).
+    static MIRROR: Cell<bool> = Cell::new(false);
+    static SHOWN_MIRRORED: Cell<bool> = Cell::new(false);
 }
 
 /// Screens that do not follow a player (connecting) draw a classic 1280x768
@@ -139,6 +143,24 @@ fn place(pos: Vec2, aim: Option<f32>) {
     VIEW.with(|v| v.set(Some(rect)));
 }
 
+/// Flip this frame's arena left-to-right (the Confuser). Call before
+/// `Glow::present`. Only the arena flips: the HUD is drawn afterwards, so its
+/// text stays readable. Keys and thumbsticks are not flipped, which is the whole
+/// point: left on the keyboard now moves you right on the screen.
+///
+/// Why here and not in the sim: mirroring is a way of *showing* the world. The
+/// host never learns what anyone sees, so the effect costs no network traffic
+/// beyond the timer already in `Player::confused`.
+pub fn mirror(on: bool) {
+    MIRROR.with(|m| m.set(on));
+}
+
+/// Was the picture shown last frame flipped? Input code that turns a position
+/// or direction on the screen into the world needs to know.
+pub fn mirrored() -> bool {
+    SHOWN_MIRRORED.with(|m| m.get())
+}
+
 /// Window pixel (e.g. the mouse) -> picture coordinates.
 pub fn screen_to_picture(screen: Vec2) -> Vec2 {
     screen / layout().ui
@@ -149,7 +171,11 @@ pub fn screen_to_picture(screen: Vec2) -> Vec2 {
 pub fn screen_to_world(screen: Vec2) -> Vec2 {
     let l = layout();
     let view = SHOWN.with(|v| v.get());
-    vec2(view.x, view.y) + screen / l.ui * (view.w / l.size.x)
+    let mut at = screen / l.ui;
+    if mirrored() {
+        at.x = l.size.x - at.x; // so aiming follows the flipped picture
+    }
+    vec2(view.x, view.y) + at * (view.w / l.size.x)
 }
 
 /// How bright a colour must be before it glows (see `DOWN_FRAGMENT`).
@@ -245,6 +271,8 @@ impl Glow {
         // next screen starts with the default view unless it follows again.
         let shown = VIEW.with(|v| v.take()).unwrap_or_else(|| default_view(&layout()));
         SHOWN.with(|v| v.set(shown));
+        let mirrored = MIRROR.with(|m| m.take());
+        SHOWN_MIRRORED.with(|m| m.set(mirrored));
 
         // Each level shrinks the one above it (the first shrinks the scene
         // and keeps only its bright parts), then is blurred across and down.
@@ -275,6 +303,7 @@ impl Glow {
                 dest_size: Some(vec2(screen_width(), screen_height())),
                 // Render targets are stored upside down relative to the screen.
                 flip_y: true,
+                flip_x: mirrored,
                 ..Default::default()
             },
         );

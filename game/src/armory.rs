@@ -2,7 +2,7 @@
 // Liero's weapon menu. It sits between the menu and the match, so it is reached
 // from every way of playing (offline, hosting, joining).
 //
-// Why a loadout at all: with ten weapons a fixed set would be a list of
+// Why a loadout at all: with fourteen weapons a fixed set would be a list of
 // everything, and the choice is half the game. Picking five means a player can
 // be the one with the Nova and the Railgun, and the others have to play around it.
 //
@@ -12,7 +12,8 @@
 
 use macroquad::prelude::*;
 use sim::weapons::{
-    ARSENAL, BLASTER, BOMB, BOUNCER, BUILD, CLUSTER, LOADOUT_SIZE, NOVA, RAILGUN, ROCKET, SWARM, TELEPORT, WEAPONS,
+    ARSENAL, BLASTER, BOMB, BOUNCER, BUILD, CLUSTER, CONFUSER, LOADOUT_SIZE, MIRROR, NOVA, OIL, RAILGUN, ROCKET, SHEEP,
+    SWARM, TELEPORT, WEAPONS,
 };
 
 use crate::draw::{button, center_wide, player_color};
@@ -34,20 +35,32 @@ const CARD_GAP: f32 = 10.0;
 
 /// One line about each weapon, for the card. Client-only text, so it lives here
 /// and not in the sim's weapon table (which only holds what the rules need).
+/// Keep them short: three columns of cards leave about 40 characters.
 fn blurb(id: u8) -> &'static str {
     match id {
         BLASTER => "fast bolts, a big magazine",
-        BUILD => "builds a brick where you aim: cover from blasts",
+        BUILD => "puts up a brick: cover from blasts",
         ROCKET => "explodes on impact and digs a crater",
         BOUNCER => "ricochets off walls",
-        BOMB => "dropped at your feet: a short fuse, and a mine",
-        RAILGUN => "an instant beam through players; bricks stop it",
+        BOMB => "a short fuse at your feet; also a mine",
+        RAILGUN => "instant beam; breaks the first brick",
         CLUSTER => "a shell that bursts into seven bomblets",
-        SWARM => "six missiles that curl towards the nearest enemy",
-        TELEPORT => "jump to where it lands, or swap places with who it hits",
-        NOVA => "one huge blast that clears a room; very slow to reload",
+        SWARM => "six missiles that curl in on an enemy",
+        TELEPORT => "jump to where it lands, or swap places",
+        NOVA => "one huge blast; very slow to reload",
+        SHEEP => "an enemy becomes a fast sheep, can't shoot",
+        CONFUSER => "mirrors an enemy's screen for 4 seconds",
+        MIRROR => "a pane that sends enemy shots back",
+        OIL => "a puddle: everyone in it slides",
         _ => "",
     }
+}
+
+/// Draw `text`, shrunk if needed so it is at most `max_w` wide.
+fn fit_text(text: &str, x: f32, y: f32, max_w: f32, size: f32, color: Color) {
+    let width = measure_text(text, None, size as u16, 1.0).width;
+    let size = if width > max_w { size * max_w / width } else { size };
+    draw_text(text, x, y, size, color);
 }
 
 pub struct Armory {
@@ -70,7 +83,9 @@ impl Armory {
         let mouse = screen_to_picture(Vec2::from(mouse_position()));
         let cards = Cards::new();
         for (i, &id) in ARSENAL.iter().enumerate() {
-            if is_key_pressed(KEYS[i]) || crate::touch::clicked_in(cards.rect(i)) {
+            // Only the first ten have a key (1-9, 0); the rest are clicked or tapped.
+            let key = KEYS.get(i).is_some_and(|&k| is_key_pressed(k));
+            if key || crate::touch::clicked_in(cards.rect(i)) {
                 self.toggle(id);
             }
         }
@@ -117,17 +132,18 @@ impl Armory {
             draw_rectangle(r.x, r.y, r.w, r.h, if hover { Color::new(0.11, 0.12, 0.145, 1.0) } else { CARD_BG });
             // Left: the key to press. Picked weapons show their slot instead,
             // in a hexagon, the game's own shape.
-            let (cx, cy) = (r.x + 34.0, r.y + r.h / 2.0);
+            let (cx, cy) = (r.x + cards.hex_x(), r.y + r.h / 2.0);
+            let hex = cards.hex_radius();
             if slot.is_some() {
                 // Your colour marks what is yours, as it does on the HUD.
                 draw_rectangle(r.x, r.y, r.w, r.h, Color::new(mine.r, mine.g, mine.b, 0.1));
                 draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, mine);
                 // Dark body, bright outline: a filled bright hexagon would glow
                 // and wash the number out.
-                draw_poly(cx, cy, 6, 20.0, 0.0, Color::new(mine.r * 0.2, mine.g * 0.2, mine.b * 0.2, 1.0));
-                draw_poly_lines(cx, cy, 6, 20.0, 0.0, 2.5, mine);
+                draw_poly(cx, cy, 6, hex, 0.0, Color::new(mine.r * 0.2, mine.g * 0.2, mine.b * 0.2, 1.0));
+                draw_poly_lines(cx, cy, 6, hex, 0.0, 2.5, mine);
             } else {
-                draw_poly_lines(cx, cy, 6, 20.0, 0.0, 1.5, TEXT_DIM);
+                draw_poly_lines(cx, cy, 6, hex, 0.0, 1.5, TEXT_DIM);
             }
         }
         glow.present();
@@ -140,21 +156,23 @@ impl Armory {
         for (i, &id) in ARSENAL.iter().enumerate() {
             let r = cards.rect(i);
             let slot = self.picked.iter().position(|&p| p == id);
-            let (cx, cy) = (r.x + 34.0, r.y + r.h / 2.0);
+            let (cx, cy) = (r.x + cards.hex_x(), r.y + r.h / 2.0);
             if let Some(n) = slot {
                 draw_text(&format!("{}", n + 1), cx - 5.0, cy + 8.0, 26.0, WHITE);
-            } else {
+            } else if i < KEYS.len() {
                 draw_text(&format!("{}", (i + 1) % 10), cx - 4.0, cy + 6.0, 20.0, TEXT_DIM);
             }
 
             let def = &WEAPONS[id as usize];
             let (name, detail) = if slot.is_some() { (TEXT, TEXT_DIM) } else { (Color::new(0.7, 0.72, 0.78, 1.0), TEXT_DIM) };
             // Small cards keep only the name; the details need room.
+            let (text_x, size) = (r.x + cards.text_x(), cards.name_size());
+            let room = r.w - cards.text_x() - 8.0;
             if r.h >= 64.0 {
-                draw_text(def.name, r.x + 70.0, r.y + 31.0, 26.0, name);
-                draw_text(blurb(id), r.x + 70.0, r.y + 56.0, 18.0, detail);
+                fit_text(def.name, text_x, r.y + 31.0, room, size, name);
+                fit_text(blurb(id), text_x, r.y + 56.0, room, 18.0, detail);
             } else {
-                draw_text(def.name, r.x + 70.0, r.y + r.h / 2.0 + 9.0, 26.0, name);
+                fit_text(def.name, text_x, r.y + r.h / 2.0 + 9.0, room, size, name);
             }
             if r.w >= 460.0 {
                 let rounds = if def.mag == 1 { "round" } else { "rounds" };
@@ -180,11 +198,12 @@ impl Armory {
     }
 }
 
-/// Where the cards go on this screen. Two columns of five, filled column by
-/// column (the left one holds the arsenal's first five weapons); one column of
-/// ten only on a narrow, tall window. A landscape phone keeps two columns: its
-/// cards get short (name only) but stay big enough to tap. Cards shrink to fit the
-/// height, and a short screen trades the help lines for room.
+/// Where the cards go on this screen. Three columns filled column by column (the
+/// left one holds the arsenal's first five weapons): fourteen cards in two
+/// columns would be seven rows, too short to tap on a landscape phone. Only a
+/// very narrow window gets two. Cards shrink to fit the height (a phone's cards
+/// get short and show only the name, but stay big enough to tap), narrow cards
+/// use smaller type, and a short screen trades the help lines for room.
 struct Cards {
     cols: usize,
     left: f32,
@@ -196,8 +215,8 @@ struct Cards {
 impl Cards {
     fn new() -> Cards {
         let size = view::layout().size;
-        let cols = if size.x >= 600.0 { 2 } else { 1 };
-        let rows = (ARSENAL.len() / cols) as f32;
+        let cols = if size.x >= 560.0 { 3 } else { 2 };
+        let rows = ARSENAL.len().div_ceil(cols) as f32;
         let (top, bottom) = if size.y >= 700.0 { (168.0, 130.0) } else { (60.0, 50.0) };
         let w = ((size.x - 60.0 - (cols - 1) as f32 * 40.0) / cols as f32).min(560.0);
         let h = ((size.y - top - bottom) / rows - CARD_GAP).min(76.0);
@@ -210,8 +229,29 @@ impl Cards {
         self.top > 100.0
     }
 
+    /// A narrow card (a phone's) squeezes its hexagon and name.
+    fn narrow(&self) -> bool {
+        self.w < 250.0
+    }
+
+    fn hex_x(&self) -> f32 {
+        if self.narrow() { 24.0 } else { 34.0 }
+    }
+
+    fn hex_radius(&self) -> f32 {
+        if self.narrow() { 14.0 } else { 20.0 }
+    }
+
+    fn text_x(&self) -> f32 {
+        if self.narrow() { 46.0 } else { 70.0 }
+    }
+
+    fn name_size(&self) -> f32 {
+        if self.narrow() { 20.0 } else { 26.0 }
+    }
+
     fn rect(&self, i: usize) -> Rect {
-        let rows = ARSENAL.len() / self.cols;
+        let rows = ARSENAL.len().div_ceil(self.cols);
         let (col, row) = (i / rows, i % rows);
         Rect::new(self.left + col as f32 * (self.w + 40.0), self.top + row as f32 * (self.h + CARD_GAP), self.w, self.h)
     }

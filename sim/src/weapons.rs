@@ -23,10 +23,16 @@ pub const TELEPORT: u8 = 8;
 pub const NOVA: u8 = 9;
 /// What a Cluster shell splits into. Not in the loadout: only the shell makes it.
 pub const BOMBLET: u8 = 10;
+/// The "gadgets": they do no damage, they change the fight.
+pub const SHEEP: u8 = 11;
+pub const CONFUSER: u8 = 12;
+pub const MIRROR: u8 = 13;
+pub const OIL: u8 = 14;
 
 /// Every weapon a player can choose from, in the order the loadout screen lists
 /// them. (The menu's shooting range hands out all of them.)
-pub const ARSENAL: [u8; 10] = [BLASTER, BUILD, ROCKET, BOUNCER, BOMB, RAILGUN, CLUSTER, SWARM, TELEPORT, NOVA];
+pub const ARSENAL: [u8; 14] =
+    [BLASTER, BUILD, ROCKET, BOUNCER, BOMB, RAILGUN, CLUSTER, SWARM, TELEPORT, NOVA, SHEEP, CONFUSER, MIRROR, OIL];
 
 /// How many weapons a player carries into a match, picked from the arsenal
 /// before it starts (like Liero's weapon menu). Keys 1-5 select them.
@@ -53,6 +59,8 @@ pub enum Kind {
     /// Puts a brick on the first free tile along the aim, within `range`.
     /// The magazine is the number of blocks you carry.
     Build,
+    /// Plants a `Deployable` (see `Special::Mirror`) `range` px in front of you.
+    Deploy,
 }
 
 /// The few behaviours that are more than a number. A weapon has at most one, so
@@ -66,6 +74,18 @@ pub enum Special {
     Cluster(u8, u8),
     /// Where it lands, its owner appears (or swaps places with the player it hit).
     Teleport,
+    /// A player it hits turns into a sheep for this many seconds: small, fast
+    /// and unable to shoot.
+    Sheep(f32),
+    /// A player it hits sees the world mirrored for this many seconds. The sim
+    /// only keeps the timer; mirroring is the client's picture (see `Player::confused`).
+    Confuse(f32),
+    /// A pane (a `Deployable`) of this half-width in px that lasts this many
+    /// seconds. Enemy projectiles that cross it fly back at their shooter.
+    Mirror(f32, f32),
+    /// Where it lands, an oil puddle of this radius in px spreads and stays this
+    /// many seconds. Players in it keep their momentum and steer badly.
+    Slick(f32, f32),
 }
 
 pub struct WeaponDef {
@@ -102,7 +122,7 @@ pub struct WeaponDef {
     pub special: Special,
 }
 
-pub static WEAPONS: [WeaponDef; 11] = [
+pub static WEAPONS: [WeaponDef; 15] = [
     WeaponDef {
         name: "Neon Blaster",
         kind: Kind::Projectile,
@@ -120,7 +140,9 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_radius: 0.0,
         blast_damage: 0.0,
         knockback: 60.0,
-        tile_damage: 0,
+        // Chips bricks: a brick has 3 hp, so it takes three hits. Slow on
+        // purpose, the rocket and bomb are the fast way through.
+        tile_damage: 1,
         pellets: 1,
         bounce: false,
         special: Special::None,
@@ -158,10 +180,10 @@ pub static WEAPONS: [WeaponDef; 11] = [
         blast_radius: 0.0,
         blast_damage: 0.0,
         knockback: 350.0,
-        // Balance: the rail used to cut two bricks, so a brick was no cover
-        // from an instant, map-long beam you cannot see coming. Now bricks
-        // stop it and digging is the explosives' job.
-        tile_damage: 0,
+        // Balance: the rail once cut two bricks, which made a brick no cover
+        // from an instant beam. Now it stops at the first brick and destroys
+        // just that one: a block is cover from one shot, then it is gone.
+        tile_damage: 3,
         pellets: 1,
         bounce: false,
         special: Special::None,
@@ -172,9 +194,9 @@ pub static WEAPONS: [WeaponDef; 11] = [
         damage: 0.0,
         speed: 0.0,
         lifetime: 0.0,
-        cooldown: 0.15, // fast enough to throw up a wall in one sweep of the aim
-        mag: 6,
-        reload: 2.0,
+        cooldown: 0.08, // fast enough to throw up a wall in one sweep of the aim
+        mag: 8,
+        reload: 1.5,
         spread: 0.0,
         range: 96.0, // three tiles
         blast_radius: 0.0,
@@ -326,5 +348,82 @@ pub static WEAPONS: [WeaponDef; 11] = [
         pellets: 1,
         bounce: false,
         special: Special::None,
+    },
+    // ---- the gadgets: no damage, they change the fight -------------------------
+    WeaponDef {
+        name: "Sheep Ray",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 560.0,
+        lifetime: 1.0,
+        cooldown: 0.6,
+        mag: 2,
+        reload: 4.0, // a sheep cannot shoot for 5 s: that is worth a slow reload
+        spread: 0.0,
+        range: 0.0,
+        blast_radius: 0.0,
+        blast_damage: 0.0,
+        knockback: 0.0,
+        tile_damage: 0,
+        pellets: 1,
+        bounce: false,
+        special: Special::Sheep(5.0),
+    },
+    WeaponDef {
+        name: "Confuser",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 560.0,
+        lifetime: 1.0,
+        cooldown: 0.5,
+        mag: 3,
+        reload: 3.0,
+        spread: 0.0,
+        range: 0.0,
+        blast_radius: 0.0,
+        blast_damage: 0.0,
+        knockback: 0.0,
+        tile_damage: 0,
+        pellets: 1,
+        bounce: false,
+        special: Special::Confuse(4.0),
+    },
+    WeaponDef {
+        name: "Mirror Pane",
+        kind: Kind::Deploy,
+        damage: 0.0,
+        speed: 0.0,
+        lifetime: 0.0,
+        cooldown: 0.5,
+        mag: 2,
+        reload: 4.0,
+        spread: 0.0,
+        range: 30.0, // how far in front of you the pane stands
+        blast_radius: 0.0,
+        blast_damage: 0.0,
+        knockback: 0.0,
+        tile_damage: 0,
+        pellets: 1,
+        bounce: false,
+        special: Special::Mirror(36.0, 6.0),
+    },
+    WeaponDef {
+        name: "Oil Slick",
+        kind: Kind::Projectile,
+        damage: 0.0,
+        speed: 380.0,
+        lifetime: 0.7, // lands about 270 px out if nothing stops it first
+        cooldown: 0.7,
+        mag: 2,
+        reload: 4.0,
+        spread: 0.0,
+        range: 0.0,
+        blast_radius: 0.0,
+        blast_damage: 0.0,
+        knockback: 0.0,
+        tile_damage: 0,
+        pellets: 1,
+        bounce: false,
+        special: Special::Slick(80.0, 8.0),
     },
 ];

@@ -155,6 +155,7 @@ impl Host {
             tick: self.world.tick,
             players: self.world.players.clone(),
             projectiles: self.world.projectiles.clone(),
+            deployables: self.world.deployables.clone(),
             winner: self.world.winner,
             events,
         }

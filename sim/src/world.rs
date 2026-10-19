@@ -68,6 +68,18 @@ const DASH_PUSH: f32 = 0.6;
 const DASH_SPEED: f32 = 850.0;
 const DASH_COOLDOWN: f32 = 1.2;
 
+/// A sheep is small to hit but not to walk: it still collides with walls as a
+/// full-size player. Shrinking the wall collision too would trap a player inside
+/// a wall corner at the moment the spell wears off.
+const SHEEP_HIT_RADIUS: f32 = 6.0;
+const SHEEP_SPEED: f32 = 1.5;
+/// `ACCEL` on oil: velocity changes about ten times slower, so you slide on
+/// (and knockback carries you ten times as far).
+const SLICK_ACCEL: f32 = 1.2;
+/// At most this many panes and puddles exist at once; a new one beyond that
+/// replaces the oldest. A cap keeps a spammed gadget from growing snapshots.
+const MAX_DEPLOYABLES: usize = 12;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WeaponState {
     /// Index into `WEAPONS`.
@@ -100,6 +112,36 @@ pub struct Player {
     pub dash_armed: f32,
     /// Seconds until the next dash is allowed.
     pub dash_cooldown: f32,
+    /// Seconds left as a sheep (Sheep Ray): small, fast, cannot shoot.
+    pub sheep: f32,
+    /// Seconds left confused (Confuser). The sim does nothing with it: the
+    /// client mirrors that player's screen. Because it lives in `Player`, it
+    /// reaches every client in the ordinary snapshot, with no new message.
+    pub confused: f32,
+}
+
+impl Player {
+    /// How big this player is for being hit (shots, beams, blasts).
+    pub fn hit_radius(&self) -> f32 {
+        if self.sheep > 0.0 { SHEEP_HIT_RADIUS } else { PLAYER_RADIUS }
+    }
+}
+
+/// Something placed in the arena that stays for a while: a mirror pane or an oil
+/// puddle. Pattern: Flyweight, like `Projectile`: only what is unique to this
+/// one is stored, and the size and duration come from the weapon's `Special`.
+/// It is a list of its own, in every snapshot, so a joiner sees panes and
+/// puddles that were placed before they arrived.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Deployable {
+    pub pos: Vec2,
+    /// A pane faces this way (its surface is the line across it); unused by oil.
+    pub angle: f32,
+    /// The weapon that made it: an index into `WEAPONS`.
+    pub weapon: u8,
+    pub owner: u8,
+    /// Seconds left to live.
+    pub life: f32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,12 +172,17 @@ pub enum Event {
     Dashed { player: u8, pos: Vec2, dir: Vec2 },
     Respawned { player: u8 },
     MatchWon { player: u8 },
+    /// A gadget shot (Sheep Ray, Confuser) landed on `victim`.
+    Status { victim: u8, weapon: u8, pos: Vec2 },
+    /// A mirror pane threw a projectile back at `pos`.
+    Reflected { pos: Vec2 },
 }
 
 pub struct World {
     pub map: Tilemap,
     pub players: Vec<Player>,
     pub projectiles: Vec<Projectile>,
+    pub deployables: Vec<Deployable>,
     /// Ticks simulated so far. Online, this is the shared clock that snapshots
     /// and inputs are labelled with ("tick 1234").
     pub tick: u32,
@@ -166,12 +213,15 @@ impl World {
                 still: 0.0,
                 dash_armed: 0.0,
                 dash_cooldown: 0.0,
+                sheep: 0.0,
+                confused: 0.0,
             })
             .collect();
         World {
             map,
             players,
             projectiles: Vec::with_capacity(64),
+            deployables: Vec::new(),
             tick: 0,
             winner: None,
             score_limit: SCORE_LIMIT,
@@ -206,6 +256,10 @@ impl World {
             self.step_player(i, &input);
         }
         self.step_projectiles();
+        for d in &mut self.deployables {
+            d.life -= DT;
+        }
+        self.deployables.retain(|d| d.life > 0.0);
         self.tick += 1;
     }
 
@@ -220,8 +274,11 @@ impl World {
             return;
         }
 
+        let on_slick = self.on_slick(self.players[i].pos);
         let p = &mut self.players[i];
         p.invuln = (p.invuln - DT).max(0.0);
+        p.sheep = (p.sheep - DT).max(0.0);
+        p.confused = (p.confused - DT).max(0.0);
         if input.aim.is_finite() {
             p.aim = input.aim;
         }
@@ -243,8 +300,9 @@ impl World {
         // Movement. Never trust the input: clamp the length so nobody can
         // send move_dir = (1000, 0) and run 1000x faster.
         let dir = if input.move_dir.is_finite() { input.move_dir.clamp_length_max(1.0) } else { Vec2::ZERO };
-        let wanted = dir * MOVE_SPEED;
-        p.vel += (wanted - p.vel) * (ACCEL * DT).min(1.0);
+        let wanted = dir * if p.sheep > 0.0 { MOVE_SPEED * SHEEP_SPEED } else { MOVE_SPEED };
+        let accel = if on_slick { SLICK_ACCEL } else { ACCEL };
+        p.vel += (wanted - p.vel) * (accel * DT).min(1.0);
 
         // Dash: resting arms it, pushing uses it up (see `DASH_REST`).
         p.dash_cooldown = (p.dash_cooldown - DT).max(0.0);
@@ -296,7 +354,8 @@ impl World {
         let p = &self.players[i];
         let (pos, aim, slot) = (p.pos, p.aim, p.current);
         let w = &p.weapons[slot];
-        if w.cooldown > 0.0 || w.reload > 0.0 || w.ammo == 0 {
+        // A sheep has no hands: it cannot shoot.
+        if w.cooldown > 0.0 || w.reload > 0.0 || w.ammo == 0 || p.sheep > 0.0 {
             return;
         }
         let id = w.id;
@@ -309,6 +368,17 @@ impl World {
                 Some(spot) => Some(spot),
                 None => return,
             },
+            _ => None,
+        };
+        // Same for a pane: aiming into a wall costs nothing.
+        let deploy_at = match def.kind {
+            Kind::Deploy => {
+                let spot = pos + dir * def.range;
+                if self.map.tile_at(spot).blocks() {
+                    return;
+                }
+                Some(spot)
+            }
             _ => None,
         };
 
@@ -326,6 +396,7 @@ impl World {
         // A block "fires" where it appears, so the flash marks the new brick.
         let muzzle = match build_at {
             Some((tx, ty)) => tile_center(tx, ty),
+            None if deploy_at.is_some() => deploy_at.unwrap_or(pos),
             None if def.kind == Kind::Projectile && def.speed == 0.0 => pos,
             None => pos + dir * (PLAYER_RADIUS + 4.0),
         };
@@ -359,7 +430,58 @@ impl World {
                     self.events.push(Event::TileChanged { x: tx, y: ty, tile: Tile::Brick(BRICK_HP) });
                 }
             }
+            Kind::Deploy => {
+                if let Some(at) = deploy_at {
+                    self.deploy(i, id, at, aim);
+                }
+            }
         }
+    }
+
+    /// Put a pane or a puddle into the arena, replacing the oldest one if the
+    /// arena is full. How long it lasts is part of the weapon's `Special`.
+    fn deploy(&mut self, owner: usize, weapon: u8, pos: Vec2, angle: f32) {
+        let (Special::Mirror(_, life) | Special::Slick(_, life)) = WEAPONS[weapon as usize].special else { return };
+        if self.deployables.len() >= MAX_DEPLOYABLES {
+            self.deployables.remove(0);
+        }
+        self.deployables.push(Deployable { pos, angle, weapon, owner: owner as u8, life });
+    }
+
+    /// Is `pos` inside an oil puddle?
+    fn on_slick(&self, pos: Vec2) -> bool {
+        self.deployables
+            .iter()
+            .any(|d| matches!(WEAPONS[d.weapon as usize].special, Special::Slick(radius, _) if d.pos.distance(pos) < radius))
+    }
+
+    /// Mirror pane: did the step from `before` to `pr.pos` carry the projectile
+    /// through an enemy's pane? If so it turns around, and it now belongs to the
+    /// pane's owner, so it hurts whoever shot it. The owner's own shots pass
+    /// through the pane, which makes it a one-way shield. A pane has no
+    /// thickness: "crossed" means the two ends of the step lie on opposite sides.
+    fn mirror_bounce(&mut self, pr: &mut Projectile, before: Vec2) -> bool {
+        for d in &self.deployables {
+            let Special::Mirror(half_width, _) = WEAPONS[d.weapon as usize].special else { continue };
+            if d.owner == pr.owner {
+                continue;
+            }
+            let normal = vec2(d.angle.cos(), d.angle.sin());
+            let (side_before, side_after) = ((before - d.pos).dot(normal), (pr.pos - d.pos).dot(normal));
+            if side_before * side_after >= 0.0 {
+                continue; // same side: it did not cross
+            }
+            let at = before + (pr.pos - before) * (side_before / (side_before - side_after));
+            if (at - d.pos).dot(vec2(-normal.y, normal.x)).abs() > half_width {
+                continue; // it crossed the pane's line, but past its end
+            }
+            pr.vel -= 2.0 * pr.vel.dot(normal) * normal;
+            pr.pos = at + normal * side_before.signum();
+            pr.owner = d.owner;
+            self.events.push(Event::Reflected { pos: at });
+            return true;
+        }
+        false
     }
 
     /// Where the build tool puts its brick: the first empty tile along the aim,
@@ -389,9 +511,15 @@ impl World {
 
     /// Hitscan: no flying object, the line is resolved instantly.
     fn fire_beam(&mut self, owner: usize, def: &WeaponDef, origin: Vec2, dir: Vec2) {
-        // 1) The beam ends at the first wall or brick, and leaves it whole.
-        let end = origin + dir * self.map.distance_to_wall(origin, dir, def.range);
+        // 1) The beam ends at the first wall or brick. A brick it ends on is
+        //    hurt by `tile_damage` (the rail destroys exactly that one).
+        let reach = self.map.distance_to_wall(origin, dir, def.range);
+        let end = origin + dir * reach;
         self.events.push(Event::Beam { from: origin, to: end });
+        if reach < def.range && def.tile_damage > 0 {
+            let (tx, ty) = tile_coords(end);
+            self.hurt_tile(tx, ty, def.tile_damage);
+        }
 
         // 2) Everything within reach of that line gets hit. The beam pierces
         //    players, so it is not a "first hit only" test.
@@ -399,7 +527,7 @@ impl World {
             if v == owner || !self.players[v].alive {
                 continue;
             }
-            if point_segment_distance(self.players[v].pos, origin, end) < PLAYER_RADIUS + BEAM_SLACK {
+            if point_segment_distance(self.players[v].pos, origin, end) < self.players[v].hit_radius() + BEAM_SLACK {
                 self.damage_player(v, def.damage, owner, dir * def.knockback);
             }
         }
@@ -426,6 +554,8 @@ impl World {
         p.hp = MAX_HP;
         p.alive = true;
         p.invuln = SPAWN_INVULN;
+        p.sheep = 0.0;
+        p.confused = 0.0;
         p.weapons = p.weapons.iter().map(|w| full_weapon(w.id)).collect();
         self.events.push(Event::Respawned { player: i as u8 });
     }
@@ -483,7 +613,13 @@ impl World {
             let mut step = pr.vel * DT / n as f32;
             let mut dir = pr.vel.normalize_or_zero();
             for _ in 0..n {
+                let before = pr.pos;
                 pr.pos += step;
+                if self.mirror_bounce(&mut pr, before) {
+                    step = pr.vel * DT / n as f32;
+                    dir = pr.vel.normalize_or_zero();
+                    continue;
+                }
 
                 let (tx, ty) = tile_coords(pr.pos);
                 if self.map.get(tx, ty).blocks() {
@@ -520,7 +656,7 @@ impl World {
                     !passes_players
                         && j != pr.owner as usize
                         && self.players[j].alive
-                        && self.players[j].pos.distance(pr.pos) < PLAYER_RADIUS + PROJECTILE_RADIUS
+                        && self.players[j].pos.distance(pr.pos) < self.players[j].hit_radius() + PROJECTILE_RADIUS
                 });
                 if let Some(j) = hit {
                     self.impact(&pr, def, dir, Some(j), None);
@@ -531,7 +667,7 @@ impl World {
             if pr.life <= 0.0 {
                 // The end of the flight is an impact with nothing: shells burst,
                 // orbs land and rockets blow up where they are.
-                if def.blast_radius > 0.0 || matches!(def.special, Special::Cluster(..) | Special::Teleport) {
+                if def.blast_radius > 0.0 || matches!(def.special, Special::Cluster(..) | Special::Teleport | Special::Slick(..)) {
                     self.impact(&pr, def, dir, None, None);
                 }
                 continue;
@@ -614,6 +750,12 @@ impl World {
         match def.special {
             Special::Cluster(count, child) => return self.burst(pr, dir, count, child),
             Special::Teleport => return self.teleport(pr, dir, victim),
+            Special::Slick(..) => {
+                // Pool where it landed, on the side it came from (see `explode`).
+                let at = self.free_point(pr.pos, dir, PROJECTILE_RADIUS).unwrap_or(pr.pos);
+                return self.deploy(pr.owner as usize, pr.weapon, at, 0.0);
+            }
+            Special::Sheep(secs) | Special::Confuse(secs) => return self.afflict(pr, def, secs, victim),
             _ => {}
         }
         if def.blast_radius > 0.0 {
@@ -634,6 +776,23 @@ impl World {
         }
     }
 
+    /// Sheep Ray and Confuser: start the timer on the player the shot hit. Spawn
+    /// protection stops it, as it stops damage (see `damage_player`). Hitting
+    /// someone who already has the effect simply restarts it.
+    fn afflict(&mut self, pr: &Projectile, def: &WeaponDef, secs: f32, victim: Option<usize>) {
+        let Some(v) = victim else { return };
+        let p = &mut self.players[v];
+        if !p.alive || p.invuln > 0.0 {
+            return;
+        }
+        match def.special {
+            Special::Sheep(_) => p.sheep = secs,
+            _ => p.confused = secs,
+        }
+        let pos = p.pos;
+        self.events.push(Event::Status { victim: v as u8, weapon: pr.weapon, pos });
+    }
+
     /// Damage falls off linearly with distance, and only reaches players who
     /// can see the blast: walls and bricks are cover. That is what makes a
     /// built block an answer to a rocket or a Nova. Players are hurt before
@@ -644,7 +803,7 @@ impl World {
 
         for v in 0..self.players.len() {
             let offset = self.players[v].pos - pos;
-            let reach = def.blast_radius + PLAYER_RADIUS;
+            let reach = def.blast_radius + self.players[v].hit_radius();
             let d = offset.length();
             if !self.players[v].alive || d >= reach || !self.map.line_of_sight(pos, self.players[v].pos) {
                 continue;
@@ -690,7 +849,10 @@ fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
 mod tests {
     use super::*;
     use crate::tilemap::MAP_GRID;
-    use crate::weapons::{ARSENAL, BLASTER, BOMB, BOMBLET, BOUNCER, BUILD, CLUSTER, NOVA, RAILGUN, ROCKET, SWARM, TELEPORT};
+    use crate::weapons::{
+        ARSENAL, BLASTER, BOMB, BOMBLET, BOUNCER, BUILD, CLUSTER, CONFUSER, MIRROR, NOVA, OIL, RAILGUN, ROCKET, SHEEP, SWARM,
+        TELEPORT,
+    };
 
     // These tests need no window, GPU or sound: the payoff of keeping the sim
     // free of rendering code.
@@ -757,12 +919,23 @@ mod tests {
     }
 
     #[test]
-    fn railgun_stops_at_a_brick_and_leaves_it_whole() {
+    fn railgun_stops_at_a_brick_and_destroys_only_that_one() {
         let mut w = two_player_world();
         w.players[1].pos = tile_center(6, 1); // behind bricks at tiles 4 and 5
         fire_once(&mut w, 0, 2, 0.0);
-        assert_eq!(w.map.get(4, 1), Tile::Brick(BRICK_HP));
+        assert_eq!(w.map.get(4, 1), Tile::Empty);
+        assert_eq!(w.map.get(5, 1), Tile::Brick(BRICK_HP));
         assert_eq!(w.players[1].hp, MAX_HP, "a brick is cover from the rail");
+    }
+
+    #[test]
+    fn blaster_needs_three_hits_to_break_a_brick() {
+        let mut w = two_player_world();
+        w.players[1].pos = tile_center(30, 10); // out of the way
+        for _ in 0..2 {
+            fire_once(&mut w, 0, 0, 0.0);
+        }
+        assert_eq!(w.map.get(4, 1), Tile::Brick(1));
     }
 
     #[test]
@@ -1123,5 +1296,131 @@ mod tests {
                 assert_eq!(a.map.get(x, y), b.map.get(x, y));
             }
         }
+    }
+
+    // ---- gadgets ----------------------------------------------------------------
+
+    /// Slots: 0 Sheep Ray, 1 Confuser, 2 Mirror Pane, 3 Oil Slick, 4 Blaster.
+    /// Player 0 stands in the open hub, player 1 five tiles to the right.
+    fn gadget_world() -> World {
+        let mut w = World::new(Tilemap::from_ascii(crate::tilemap::MAP_HUB), 2, &[SHEEP, CONFUSER, MIRROR, OIL, BLASTER], 1);
+        w.players[0].pos = tile_center(5, 4);
+        w.players[1].pos = tile_center(10, 4);
+        w
+    }
+
+    #[test]
+    fn sheep_ray_makes_a_small_sheep_that_cannot_shoot() {
+        let mut w = gadget_world();
+        fire_once(&mut w, 0, 0, 0.0);
+        assert!(w.players[1].sheep > 0.0);
+        assert!(w.players[1].hit_radius() < PLAYER_RADIUS);
+        let mag = WEAPONS[BLASTER as usize].mag;
+        fire_once(&mut w, 1, 4, std::f32::consts::PI);
+        assert_eq!(w.players[1].weapons[4].ammo, mag, "a sheep has no hands");
+        assert_eq!(w.players[0].hp, MAX_HP);
+    }
+
+    #[test]
+    fn the_sheep_turns_back_when_the_time_is_up() {
+        let mut w = gadget_world();
+        fire_once(&mut w, 0, 0, 0.0);
+        for _ in 0..(5.0 / DT) as i32 {
+            w.step(&[]);
+        }
+        assert_eq!(w.players[1].sheep, 0.0);
+        fire_once(&mut w, 1, 4, std::f32::consts::PI);
+        assert!(w.players[0].hp < MAX_HP, "and it can shoot again");
+    }
+
+    #[test]
+    fn confuser_only_sets_a_timer() {
+        let mut w = gadget_world();
+        fire_once(&mut w, 0, 1, 0.0);
+        assert!(w.players[1].confused > 0.0);
+        assert_eq!(w.players[1].sheep, 0.0);
+        assert_eq!(w.players[1].hp, MAX_HP);
+    }
+
+    #[test]
+    fn spawn_protection_stops_a_gadget_shot() {
+        let mut w = gadget_world();
+        w.players[1].invuln = SPAWN_INVULN;
+        fire_once(&mut w, 0, 0, 0.0);
+        assert_eq!(w.players[1].sheep, 0.0);
+    }
+
+    #[test]
+    fn a_mirror_pane_sends_a_shot_back_at_its_shooter() {
+        let mut w = gadget_world();
+        // Player 1 plants a pane in front of them, facing player 0.
+        fire_once(&mut w, 1, 2, std::f32::consts::PI);
+        assert_eq!(w.deployables.len(), 1);
+        fire_once(&mut w, 0, 4, 0.0);
+        assert!(w.players[0].hp < MAX_HP, "the bolt came back");
+        assert_eq!(w.players[1].hp, MAX_HP, "and the pane's owner is untouched");
+    }
+
+    #[test]
+    fn the_owner_shoots_through_their_own_pane() {
+        let mut w = gadget_world();
+        fire_once(&mut w, 1, 2, std::f32::consts::PI);
+        fire_once(&mut w, 1, 4, std::f32::consts::PI);
+        assert!(w.players[0].hp < MAX_HP);
+    }
+
+    #[test]
+    fn a_pane_does_not_catch_a_shot_that_passes_beside_it() {
+        let mut w = gadget_world();
+        fire_once(&mut w, 1, 2, std::f32::consts::PI);
+        // The pane is 72 px wide, centred on the row: move the shooter well off it.
+        w.players[0].pos = tile_center(5, 4) + vec2(0.0, -80.0);
+        fire_once(&mut w, 0, 4, 0.0);
+        assert_eq!(w.players[1].hp, MAX_HP);
+        assert_eq!(w.players[0].hp, MAX_HP);
+    }
+
+    #[test]
+    fn panes_and_puddles_expire() {
+        let mut w = gadget_world();
+        fire_once(&mut w, 1, 2, std::f32::consts::PI);
+        for _ in 0..(6.5 / DT) as i32 {
+            w.step(&[]);
+        }
+        assert!(w.deployables.is_empty());
+    }
+
+    #[test]
+    fn oil_lands_where_thrown_and_makes_you_slide() {
+        let mut w = gadget_world();
+        fire_once(&mut w, 0, 3, 0.0);
+        assert_eq!(w.deployables.len(), 1);
+        assert_eq!(w.deployables[0].weapon, OIL);
+
+        // The same coast with and without a puddle underfoot.
+        let coast = |oil: bool| {
+            let mut w = gadget_world();
+            if oil {
+                w.deployables.push(Deployable { pos: w.players[0].pos, angle: 0.0, weapon: OIL, owner: 1, life: 8.0 });
+            }
+            w.players[0].vel = vec2(200.0, 0.0);
+            for _ in 0..30 {
+                w.step(&[]);
+            }
+            w.players[0].vel.x
+        };
+        assert!(coast(false) < 5.0, "normal ground stops you");
+        assert!(coast(true) > 80.0, "oil lets you slide on");
+    }
+
+    #[test]
+    fn a_gadget_into_a_wall_costs_no_charge() {
+        let mut w = gadget_world();
+        w.players[0].pos = tile_center(1, 1);
+        // Aim straight at the wall right behind the player.
+        let mag = WEAPONS[MIRROR as usize].mag;
+        fire_once(&mut w, 0, 2, std::f32::consts::PI);
+        assert_eq!(w.players[0].weapons[2].ammo, mag);
+        assert!(w.deployables.is_empty());
     }
 }

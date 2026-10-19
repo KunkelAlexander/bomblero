@@ -158,6 +158,7 @@ impl Replica {
         // don't need to.)
         self.world.players = from.players.clone();
         self.world.projectiles = from.projectiles.clone();
+        self.world.deployables = from.deployables.clone();
 
         // Projectiles fly in straight lines, so instead of matching them up
         // between two snapshots (they have no id) we just move each one on
@@ -204,7 +205,7 @@ mod tests {
     fn snapshot(tick: u32, events: Vec<Event>) -> Snapshot {
         let mut players = world().players;
         players[0].pos = vec2(tick as f32 * 10.0, 100.0);
-        Snapshot { tick, players, projectiles: Vec::new(), winner: None, events }
+        Snapshot { tick, players, projectiles: Vec::new(), deployables: Vec::new(), winner: None, events }
     }
 
     fn replica(delay: u32) -> Replica {
