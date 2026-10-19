@@ -98,7 +98,8 @@ pub enum Special {
     /// seconds. Enemy projectiles that cross it fly back at their shooter.
     Mirror(f32, f32),
     /// Where it lands, an oil puddle of this radius in px spreads and stays this
-    /// many seconds. Players in it keep their momentum and steer badly.
+    /// many seconds. Players in it cannot steer or dash, and take damage (for
+    /// whoever laid it) when they slide into a wall.
     Slick(f32, f32),
     /// Splits in two, one each side of its heading, into this weapon. Where it
     /// ends (a wall, or the end of its fuse) is where it splits.
@@ -449,7 +450,7 @@ pub static WEAPONS: [WeaponDef; 23] = [
         tile_damage: 0,
         pellets: 1,
         bounce: false,
-        special: Special::Slick(80.0, 8.0),
+        special: Special::Slick(100.0, 10.0),
     },
     // ---- the second set of gadgets ---------------------------------------------
     WeaponDef {

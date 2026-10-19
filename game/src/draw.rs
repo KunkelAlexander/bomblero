@@ -263,20 +263,63 @@ fn draw_players(world: &World, t: f32) {
     }
 }
 
-/// A player turned into a sheep: a cloud of wool, a dark face where they look,
-/// and a ring in their own colour so you still know whose it is.
+/// A player turned into a sheep, seen from above-and-side like a cartoon one:
+/// a fluffy cloud of wool, a dark face with ears and eyes out front, four
+/// trotting legs and a stub of a tail, all turned to face where they aim. A ring
+/// in their own colour says whose it is, and it says "baa" every so often.
 fn draw_sheep(p: &sim::Player, c: Color, t: f32) {
-    let dir = vec2(p.aim.cos(), p.aim.sin());
-    // The wool bobs a little, faster when it runs.
-    let bob = (t * 14.0).sin() * (p.vel.length() / 330.0).min(1.0);
-    for k in 0..6 {
-        let a = k as f32 * std::f32::consts::TAU / 6.0;
-        draw_circle(p.pos.x + a.cos() * 4.0, p.pos.y + a.sin() * 4.0 + bob, 4.6, WHITE);
+    let fwd = vec2(p.aim.cos(), p.aim.sin());
+    let side = vec2(-fwd.y, fwd.x);
+    // A point in the sheep's own frame: x ahead of the body's middle, y to its left.
+    let at = |x: f32, y: f32| p.pos + fwd * x + side * y;
+    let speed = (p.vel.length() / 330.0).min(1.0);
+    let dark = Color::new(0.14, 0.11, 0.13, 1.0);
+    let shade = Color::new(0.72, 0.74, 0.82, 1.0);
+
+    // Legs first, under the wool: the near and far pair swing in turn.
+    for (x, y, phase) in [(5.0, -4.5, 0.0), (5.0, 4.5, 3.14), (-5.0, -4.5, 3.14), (-5.0, 4.5, 0.0)] {
+        let swing = (t * 22.0 + phase).sin() * 2.5 * speed;
+        let foot = at(x + swing, y * 1.25);
+        let hip = at(x, y * 0.6);
+        draw_line(hip.x, hip.y, foot.x, foot.y, 2.4, dark);
     }
-    draw_circle(p.pos.x, p.pos.y + bob, 4.6, WHITE);
-    let head = p.pos + dir * 8.0;
-    draw_circle(head.x, head.y, 3.0, Color::new(0.12, 0.1, 0.12, 1.0));
-    draw_circle_lines(p.pos.x, p.pos.y + bob, 9.5, 1.5, c);
+    // Wool: a grey layer a little wider than the white one gives the cloud its
+    // fluffy, lumpy edge. The lumps wobble as it trots.
+    let lumps = [
+        (-5.5, 0.0), (-3.0, -5.0), (-3.0, 5.0), (1.0, -6.0), (1.0, 6.0), (4.0, -4.5), (4.0, 4.5), (-8.0, -2.5), (-8.0, 2.5), (0.0, 0.0),
+    ];
+    for layer in 0..2 {
+        for (k, (x, y)) in lumps.iter().enumerate() {
+            let wobble = (t * 16.0 + k as f32).sin() * 0.5 * speed;
+            let q = at(*x, *y + wobble);
+            if layer == 0 {
+                draw_circle(q.x, q.y, 5.6, shade);
+            } else {
+                draw_circle(q.x - 0.5, q.y - 0.5, 4.6, WHITE);
+            }
+        }
+    }
+    // The tail, then the head: dark, with floppy ears, white eyes and a nose.
+    let tail = at(-11.0, 0.0);
+    draw_circle(tail.x, tail.y, 2.4, WHITE);
+    for s in [-1.0, 1.0] {
+        let ear = at(8.5, s * 5.0);
+        draw_circle(ear.x, ear.y, 2.4, dark);
+    }
+    let head = at(11.0, 0.0);
+    draw_circle(head.x, head.y, 4.6, dark);
+    for s in [-1.0, 1.0] {
+        let eye = at(12.5, s * 2.2);
+        draw_circle(eye.x, eye.y, 1.5, WHITE);
+        draw_circle(eye.x + fwd.x * 0.5, eye.y + fwd.y * 0.5, 0.7, dark);
+    }
+    draw_circle_lines(p.pos.x, p.pos.y, 15.0, 1.5, c);
+    // "baa": shown for the first third of every second and a half.
+    if (t * 0.67).fract() < 0.33 {
+        let text = "baa!";
+        let dim = measure_text(text, None, 14, 1.0);
+        draw_text(text, p.pos.x - dim.width / 2.0, p.pos.y - p.hit_radius() - 18.0, 14.0, Color::new(1.0, 0.85, 0.95, 1.0));
+    }
 }
 
 pub fn center_text(text: &str, y: f32, size: f32, color: Color) {

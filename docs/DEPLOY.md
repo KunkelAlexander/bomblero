@@ -36,6 +36,13 @@ will fail until steps 2 and 3 are done; that is expected.)
 4. The relay's WebSocket address is the same host with `wss://` and `/ws`:
    `wss://<name>.onrender.com/ws`.
 
+**Region matters.** Every message goes host → relay → joiner, so the ping is
+the sum of both players' distance to the relay. `render.yaml` sets
+`region: singapore`; change it to the region nearest your players *before*
+creating the service (Render cannot move an existing one). Check the result
+with `curl -o NUL -s -w "%{time_connect}\n" https://<name>.onrender.com/` (one
+round trip to the relay, in seconds).
+
 What to expect from the free plan (checked against Render's docs, October 2026):
 
 * The service **falls asleep after 15 minutes without incoming traffic** and

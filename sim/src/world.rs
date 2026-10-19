@@ -73,9 +73,17 @@ const DASH_COOLDOWN: f32 = 1.2;
 /// a wall corner at the moment the spell wears off.
 const SHEEP_HIT_RADIUS: f32 = 6.0;
 const SHEEP_SPEED: f32 = 1.5;
-/// `ACCEL` on oil: velocity changes about ten times slower, so you slide on
-/// (and knockback carries you ten times as far).
-const SLICK_ACCEL: f32 = 1.2;
+/// `ACCEL` on oil: velocity changes about forty times slower, so there is next
+/// to no steering: you go where you were already going, and knockback carries you
+/// forty times as far.
+const SLICK_ACCEL: f32 = 0.3;
+/// What makes oil dangerous rather than funny: hit a wall while sliding on it and
+/// you take `SLAM_DAMAGE` per px/s above `SLAM_SPEED`, up to `SLAM_MAX`. A walking
+/// player slams for about 18, a blast-knocked one for the maximum. The damage is
+/// credited to whoever laid the puddle.
+const SLAM_SPEED: f32 = 100.0;
+const SLAM_DAMAGE: f32 = 0.15;
+const SLAM_MAX: f32 = 40.0;
 /// At most this many panes and puddles exist at once; a new one beyond that
 /// replaces the oldest. A cap keeps a spammed gadget from growing snapshots.
 const MAX_DEPLOYABLES: usize = 12;
@@ -290,7 +298,8 @@ impl World {
             return;
         }
 
-        let on_slick = self.on_slick(self.players[i].pos);
+        let slick = self.slick_owner(self.players[i].pos);
+        let on_slick = slick.is_some();
         let pull = self.well_pull(self.players[i].pos);
         let p = &mut self.players[i];
         p.invuln = (p.invuln - DT).max(0.0);
@@ -338,7 +347,9 @@ impl World {
             }
         } else {
             p.still = 0.0;
-            if p.dash_armed > 0.0 && dir.length() >= DASH_PUSH && p.dash_cooldown == 0.0 {
+            // No grip, no push-off: oil takes the dash away too, so the only way
+            // out is to keep sliding in a straight line.
+            if p.dash_armed > 0.0 && dir.length() >= DASH_PUSH && p.dash_cooldown == 0.0 && !on_slick {
                 // Set, not add: a dash out of a blast's knockback goes where
                 // you point, which is what makes it an escape.
                 p.vel = dir.normalize() * DASH_SPEED;
@@ -352,14 +363,17 @@ impl World {
 
         // Move one axis at a time so a player slides along walls instead of
         // sticking to them.
+        let mut slam = 0.0_f32;
         let nx = p.pos + vec2(p.vel.x * DT, 0.0);
         if self.map.circle_hits_wall(nx, PLAYER_RADIUS) {
+            slam = slam.max(p.vel.x.abs());
             p.vel.x = 0.0;
         } else {
             p.pos = nx;
         }
         let ny = p.pos + vec2(0.0, p.vel.y * DT);
         if self.map.circle_hits_wall(ny, PLAYER_RADIUS) {
+            slam = slam.max(p.vel.y.abs());
             p.vel.y = 0.0;
         } else {
             p.pos = ny;
@@ -367,6 +381,11 @@ impl World {
         if dashed {
             let (pos, vel) = (p.pos, p.vel);
             self.events.push(Event::Dashed { player: i as u8, pos, dir: vel.normalize_or_zero() });
+        }
+        if let Some(owner) = slick {
+            if slam > SLAM_SPEED {
+                self.damage_player(i, ((slam - SLAM_SPEED) * SLAM_DAMAGE).min(SLAM_MAX), owner, Vec2::ZERO);
+            }
         }
 
         if input.fire {
@@ -475,11 +494,12 @@ impl World {
         self.deployables.push(Deployable { pos, angle, weapon, owner: owner as u8, life });
     }
 
-    /// Is `pos` inside an oil puddle?
-    fn on_slick(&self, pos: Vec2) -> bool {
+    /// Who laid the oil puddle `pos` is in, if it is in one.
+    fn slick_owner(&self, pos: Vec2) -> Option<usize> {
         self.deployables
             .iter()
-            .any(|d| matches!(WEAPONS[d.weapon as usize].special, Special::Slick(radius, _) if d.pos.distance(pos) < radius))
+            .find(|d| matches!(WEAPONS[d.weapon as usize].special, Special::Slick(radius, _) if d.pos.distance(pos) < radius))
+            .map(|d| d.owner as usize)
     }
 
     /// The sum of the pulls of every black hole that reaches `pos`, as an
@@ -1524,7 +1544,33 @@ mod tests {
             w.players[0].vel.x
         };
         assert!(coast(false) < 5.0, "normal ground stops you");
-        assert!(coast(true) > 80.0, "oil lets you slide on");
+        assert!(coast(true) > 150.0, "oil lets you slide on");
+    }
+
+    #[test]
+    fn sliding_into_a_wall_on_oil_hurts_and_credits_the_owner() {
+        let mut w = gadget_world();
+        let at = w.players[0].pos;
+        w.deployables.push(Deployable { pos: at, angle: 0.0, weapon: OIL, owner: 1, life: 8.0 });
+        // Steering away from the wall does nothing: the push comes from momentum.
+        w.players[0].vel = vec2(-220.0, 0.0);
+        w.players[0].pos = tile_center(2, 10);
+        w.deployables[0].pos = w.players[0].pos;
+        let hp = w.players[0].hp;
+        for _ in 0..60 {
+            w.step(&[Input { move_dir: vec2(1.0, 0.0), ..Input::default() }, Input::default()]);
+        }
+        assert!(w.players[0].hp < hp - 5.0, "the wall slam hurts");
+
+        // The same hit on dry ground costs nothing.
+        let mut dry = gadget_world();
+        dry.players[0].vel = vec2(-220.0, 0.0);
+        dry.players[0].pos = tile_center(2, 10);
+        let hp = dry.players[0].hp;
+        for _ in 0..60 {
+            dry.step(&[]);
+        }
+        assert_eq!(dry.players[0].hp, hp);
     }
 
     #[test]

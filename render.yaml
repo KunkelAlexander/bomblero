@@ -9,6 +9,10 @@ services:
     name: neon-bomber-relay
     runtime: docker
     plan: free
+    # Without this Render picks Oregon, which is far from both Singapore and
+    # Europe and doubles the ping (every message goes host -> relay -> joiner).
+    # Cannot be changed on an existing service: make a new one.
+    region: singapore
     dockerfilePath: ./server/Dockerfile
     dockerContext: .
     # "/" answers with a short text page (see server/src/lib.rs).

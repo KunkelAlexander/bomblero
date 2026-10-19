@@ -49,7 +49,7 @@ fn blurb(id: u8) -> &'static str {
         SHEEP => "an enemy becomes a fast sheep, can't shoot",
         CONFUSER => "mirrors an enemy's screen for 4 seconds",
         MIRROR => "a pane that sends enemy shots back",
-        OIL => "a puddle: everyone in it slides",
+        OIL => "no steering in it, walls hurt",
         LASER => "hold to fire: a beam that bounces off walls",
         CRACKLER => "splits four times into sixteen sparks",
         BLACKHOLE => "pulls everyone nearby in and holds them",
