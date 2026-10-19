@@ -123,7 +123,7 @@ impl HostGame {
 
     fn frame(&mut self, controls: &mut Controls, glow: &view::Glow) {
         // On a touchscreen, a tap after the match is over stands in for R.
-        let tapped = touch::active() && self.game.replica.world.winner.is_some() && is_mouse_button_pressed(MouseButton::Left);
+        let tapped = self.game.replica.world.winner.is_some() && touch::pressed();
         if is_key_pressed(KeyCode::R) || tapped {
             self.game.restart(new_seed());
         }
@@ -200,7 +200,7 @@ async fn main() {
         if touch::active() {
             // Stick hints only where the sticks do something.
             let playing = match &screen {
-                Screen::Menu(menu) => !menu.typing(),
+                Screen::Menu(menu) => menu.walkable(),
                 Screen::Setup(_) | Screen::Armory(_) => false,
                 Screen::Hosting(_) | Screen::Joined(_) => true,
             };

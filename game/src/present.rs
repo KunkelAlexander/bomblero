@@ -29,6 +29,9 @@ pub struct Presenter {
     ink: Ink,
     terrain: Terrain,
     lights: Option<Lights>,
+    /// Look at this world point instead of following the local player (the
+    /// phone menu frames its title this way).
+    pub pinned: Option<Vec2>,
     /// Smoothed time between frames, shown in the HUD so a slow GPU is visible.
     frame_ms: f32,
     up_rate: RateMeter,
@@ -74,7 +77,10 @@ impl Presenter {
         lights.extend_from_slice(extra);
 
         let me = &replica.world.players[replica.me as usize];
-        view::follow(me.pos, me.aim);
+        match self.pinned {
+            Some(at) => view::pin(at),
+            None => view::follow(me.pos, me.aim),
+        }
         glow.begin();
         self.terrain.draw(&replica.world.map, &lights, &self.ink);
         // Created on the first frame: it needs the graphics context.

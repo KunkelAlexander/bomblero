@@ -9,6 +9,11 @@
 // the same host, sim and presenter as a real game. "Inputs in, state out" pays
 // off again: the menu is just another client reading a `Replica`.
 //
+// On a phone-sized screen (see `compact`) there is no room to play in: the map
+// would be zoomed in on a thumb-sized piece of floor and the pads are out of
+// sight. There the menu is a still picture of the title with the three buttons,
+// and nothing walks.
+//
 // The old keys still work (P, H, J) for anyone who just wants to get going, and
 // on a touchscreen three big buttons in the bottom strip do the same: walking
 // a thumbstick onto a pad is a fine tutorial, but a poor way to pick a menu item.
@@ -42,6 +47,15 @@ const PADS: [Pad; 3] = [
     Pad { pos: vec2(640.0, 544.0), label: "HOST", hint: "open a room for friends" },
     Pad { pos: vec2(1040.0, 544.0), label: "JOIN", hint: "enter a room code" },
 ];
+
+/// The middle of the title sign, in world pixels: where the phone menu looks.
+const TITLE_AT: Vec2 = vec2(640.0, 108.0);
+
+/// Phone-sized: a touchscreen with a picture under 600 px tall (a phone held
+/// sideways). Tablets and anything with a keyboard keep the playable menu.
+fn compact() -> bool {
+    crate::touch::is_touch_device() && view::layout().size.y < 600.0
+}
 
 const PAD_RADIUS: f32 = 40.0;
 /// How close the player's centre must be to count as standing on a pad.
@@ -80,7 +94,7 @@ impl Menu {
     pub fn frame(&mut self, controls: &mut Controls, glow: &Glow) -> Option<Choice> {
         let me = self.hub.game.replica.me as usize;
         // While a code is being typed the letters must not also walk the player.
-        let input = if self.typing.is_some() {
+        let input = if self.typing.is_some() || compact() {
             Input { aim: self.hub.game.replica.world.players[me].aim, ..Input::default() }
         } else {
             controls.read(&self.hub.game.replica.world, me)
@@ -96,9 +110,10 @@ impl Menu {
         }
     }
 
-    /// Whether the code entry is up (the thumbsticks do nothing then).
-    pub fn typing(&self) -> bool {
-        self.typing.is_some()
+    /// Whether the thumbsticks do something here: not while the code entry is
+    /// up, and not on the still phone menu.
+    pub fn walkable(&self) -> bool {
+        self.typing.is_none() && !compact()
     }
 
     fn walk(&mut self, me: usize) -> Option<Choice> {
@@ -112,6 +127,9 @@ impl Menu {
             return self.pick(2);
         }
 
+        if compact() {
+            return None;
+        }
         let player = &self.hub.game.replica.world.players[me];
         let mut on = if player.alive { PADS.iter().position(|p| p.pos.distance(player.pos) < STAND_RADIUS) } else { None };
         if on != self.ignore {
@@ -182,13 +200,24 @@ impl Menu {
     }
 
     fn draw(&mut self, me: usize, glow: &Glow) -> Option<Tap> {
+        let compact = compact();
         // The pads light their alcoves a little, so you can see where to go.
-        let lights: Vec<Light> = PADS.iter().map(|p| Light { pos: p.pos, radius: 120.0, color: Color::new(0.7, 0.85, 1.0, 1.0), strength: 0.45 }).collect();
+        let lights: Vec<Light> = PADS.iter().filter(|_| !compact).map(|p| Light { pos: p.pos, radius: 120.0, color: Color::new(0.7, 0.85, 1.0, 1.0), strength: 0.45 }).collect();
 
         let hub = &mut self.hub;
+        hub.presenter.pinned = compact.then_some(TITLE_AT);
         hub.presenter.floor(&mut hub.game.replica, &lights, glow);
         // Signs painted on the floor, under the player and their shots.
         draw_title();
+        if compact {
+            center_text("tap a button below", 224.0, 26.0, TEXT_DIM);
+            glow.present();
+            glow.ui();
+            return match &self.typing {
+                Some(code) => draw_code_entry(code).map(Tap::Key),
+                None => draw_pad_buttons().map(Tap::Pad),
+            };
+        }
         if crate::touch::active() {
             center_text("left thumb: move    right thumb: aim and fire    tap a card: weapon", 336.0, 26.0, TEXT_DIM);
         } else {
@@ -213,7 +242,9 @@ impl Menu {
         if let Some(code) = &self.typing {
             draw_code_entry(code).map(Tap::Key)
         } else if crate::touch::active() {
-            draw_pad_buttons().map(Tap::Pad)
+            // A tap that only woke the buttons must not press one unseen.
+            let tap = draw_pad_buttons().map(Tap::Pad);
+            tap.filter(|_| crate::touch::was_shown())
         } else {
             None
         }

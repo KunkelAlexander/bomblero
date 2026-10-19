@@ -104,6 +104,15 @@ fn default_view(l: &Layout) -> Rect {
 /// otherwise the camera zooms in, centres on the player (led a little towards
 /// `aim`) and stops at the arena's edges.
 pub fn follow(pos: Vec2, aim: f32) {
+    place(pos, Some(aim));
+}
+
+/// Hold the camera on a fixed world point, without the look-ahead.
+pub fn pin(at: Vec2) {
+    place(at, None);
+}
+
+fn place(pos: Vec2, aim: Option<f32>) {
     let l = layout();
     let area = vec2(l.size.x, l.hud_top() - TOP_MARGIN);
     let fit = (area.x / MAP_SIZE.x).min(area.y / MAP_SIZE.y);
@@ -114,7 +123,7 @@ pub fn follow(pos: Vec2, aim: f32) {
     // Lead towards the aim, but only along an axis that scrolls: a map that
     // fits stays still.
     let scrolls = vec2((seen.x < MAP_SIZE.x) as u8 as f32, (seen.y < MAP_SIZE.y) as u8 as f32);
-    let target = vec2(aim.cos(), aim.sin()) * seen * LOOK_AHEAD * scrolls;
+    let target = aim.map_or(Vec2::ZERO, |a| vec2(a.cos(), a.sin()) * seen * LOOK_AHEAD * scrolls);
     let blend = 1.0 - (-LOOK_SPEED * get_frame_time()).exp();
     let look = LOOK.with(|l| {
         let look = l.get() + (target - l.get()) * blend;

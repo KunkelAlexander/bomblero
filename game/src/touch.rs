@@ -13,7 +13,7 @@
 // know a phone was involved: Pattern: Command pays off here, as a new input
 // device costs one file and zero changes to the game rules or the netcode.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 
 use macroquad::prelude::*;
 
@@ -25,16 +25,50 @@ const RADIUS: f32 = 64.0;
 /// thumb can turn without wasting ammo.
 const FIRE_AT: f32 = 0.3;
 
+/// Seconds without a finger on the screen after which the touch controls hide
+/// again, so a phone with a keyboard attached gets a clean screen.
+const IDLE: f64 = 15.0;
+
 thread_local! {
-    // Whether the player is using a touchscreen right now. Global so screens can
+    // When a finger was last on the screen (`get_time`). Global so screens can
     // swap their hints ("press R" vs "tap") without having it handed down.
-    static ACTIVE: Cell<bool> = Cell::new(false);
+    static LAST_TOUCH: Cell<f64> = Cell::new(f64::NEG_INFINITY);
+    // Whether the controls were already on screen when this frame's fingers
+    // landed: a touch that only *wakes* them must not press an invisible button.
+    static WAS_ACTIVE: Cell<bool> = Cell::new(false);
+    // Where fingers landed this frame (screen pixels). Buttons read these, not
+    // the mouse macroquad fakes from touches (see `clicked_in`).
+    static PRESSES: RefCell<Vec<Vec2>> = RefCell::new(Vec::new());
 }
 
-/// True on a phone or tablet from the start, and on any device after a touch,
-/// until a key is pressed again.
+/// True from the first touch until `IDLE` seconds after the last one, or until
+/// a key is pressed. Never on a device nobody has touched.
 pub fn active() -> bool {
-    ACTIVE.with(|a| a.get())
+    get_time() - LAST_TOUCH.with(|t| t.get()) < IDLE
+}
+
+/// Did a finger land on a (picture-space) rectangle this frame, or, without
+/// touch, was it clicked? Why not just `is_mouse_button_pressed`? macroquad fakes
+/// a mouse from touches, and that mouse jumps to whichever finger moved last, so
+/// a tap on a button while the other thumb rests on the stick often missed.
+/// Hit-testing the finger that actually landed fixes that.
+pub fn clicked_in(r: Rect) -> bool {
+    if active() {
+        let ui = view::layout().ui;
+        PRESSES.with(|p| p.borrow().iter().any(|&at| r.contains(at / ui)))
+    } else {
+        is_mouse_button_pressed(MouseButton::Left) && r.contains(view::screen_to_picture(Vec2::from(mouse_position())))
+    }
+}
+
+/// Did any finger land this frame?
+pub fn pressed() -> bool {
+    PRESSES.with(|p| !p.borrow().is_empty())
+}
+
+/// Were the touch controls visible when this frame's fingers landed?
+pub fn was_shown() -> bool {
+    WAS_ACTIVE.with(|a| a.get())
 }
 
 /// Is the main pointer a finger (phone, tablet)? Asked of the browser (see
@@ -94,8 +128,9 @@ impl Stick {
 
 #[derive(Default)]
 pub struct Touch {
-    /// Whether the first `update` has run (it sets the starting mode).
-    started: bool,
+    /// The fingers seen on earlier frames. A finger not in here is new, even if
+    /// it landed and lifted between two frames (see `update`).
+    down: Vec<u64>,
     left: Option<Stick>,
     right: Option<Stick>,
     /// Fingers that landed on the HUD this frame (picture coordinates): taps
@@ -107,21 +142,20 @@ impl Touch {
     /// Read the fingers. Call once per frame, on every screen, so a finger
     /// lifted while a menu was up is never left "held".
     pub fn update(&mut self) {
-        if !self.started {
-            self.started = true;
-            ACTIVE.with(|a| a.set(is_touch_device()));
-        }
+        WAS_ACTIVE.with(|a| a.set(active()));
+        PRESSES.with(|p| p.borrow_mut().clear());
         if wants_landscape() {
             // The rotate hint covers the game; fingers on it are not input.
             (self.left, self.right) = (None, None);
             self.taps.clear();
+            self.down.clear();
             return;
         }
         let touches = touches();
         if !touches.is_empty() {
-            ACTIVE.with(|a| a.set(true));
+            LAST_TOUCH.with(|t| t.set(get_time()));
         } else if get_last_key_pressed().is_some() {
-            ACTIVE.with(|a| a.set(false));
+            LAST_TOUCH.with(|t| t.set(f64::NEG_INFINITY));
         }
 
         // Drop sticks whose finger is gone (macroquad forgets a touch the frame
@@ -138,27 +172,34 @@ impl Touch {
         let l = view::layout();
         for t in &touches {
             let pos = t.position / l.ui;
-            match t.phase {
-                TouchPhase::Started => {
-                    if pos.y >= l.hud_top() {
-                        self.taps.push(pos);
-                    } else if back_button().contains(t.position) {
-                        // The back button handles itself (via the mouse).
-                    } else if pos.x < l.size.x / 2.0 {
-                        self.left.get_or_insert(Stick { id: t.id, origin: pos, pos });
-                    } else {
-                        self.right.get_or_insert(Stick { id: t.id, origin: pos, pos });
-                    }
+            // macroquad keeps one entry per finger, so a tap that starts and ends
+            // within one frame arrives as a lone `Ended` and its `Started` is
+            // gone. Judging by "have I seen this finger before?" instead of by
+            // phase catches those quick taps too (slow frames on a phone make
+            // them common).
+            let new = !self.down.contains(&t.id) && t.phase != TouchPhase::Cancelled;
+            if new {
+                PRESSES.with(|p| p.borrow_mut().push(t.position));
+                if pos.y >= l.hud_top() {
+                    self.taps.push(pos);
+                } else if back_button().contains(t.position) {
+                    // The back button handles itself (see `back_pressed`).
+                } else if t.phase == TouchPhase::Ended {
+                    // Lifted already: a tap, nothing to hold a stick with.
+                } else if pos.x < l.size.x / 2.0 {
+                    self.left.get_or_insert(Stick { id: t.id, origin: pos, pos });
+                } else {
+                    self.right.get_or_insert(Stick { id: t.id, origin: pos, pos });
                 }
-                _ => {
-                    for stick in [&mut self.left, &mut self.right].into_iter().flatten() {
-                        if stick.id == t.id {
-                            stick.pos = pos;
-                        }
+            } else {
+                for stick in [&mut self.left, &mut self.right].into_iter().flatten() {
+                    if stick.id == t.id {
+                        stick.pos = pos;
                     }
                 }
             }
         }
+        self.down = touches.iter().filter(|t| t.phase != TouchPhase::Ended && t.phase != TouchPhase::Cancelled).map(|t| t.id).collect();
     }
 
     /// The move stick's push, length 0..=1.
@@ -223,7 +264,9 @@ pub fn draw_back_button() {
     draw_line(m.x - k, m.y + k, m.x + k, m.y - k, 3.0, c);
 }
 
-/// Was the back button tapped (or clicked) this frame?
+/// Was the back button tapped this frame? Only if it was already drawn: the
+/// touch that wakes the controls (say, a thumb landing top right) must not
+/// throw the player out of the match.
 pub fn back_pressed() -> bool {
-    active() && is_mouse_button_pressed(MouseButton::Left) && back_button().contains(Vec2::from(mouse_position()))
+    was_shown() && PRESSES.with(|p| p.borrow().iter().any(|&at| back_button().contains(at)))
 }

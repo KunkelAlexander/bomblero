@@ -172,5 +172,5 @@ pub fn button(r: Rect, label: &str, enabled: bool, accent: Color) -> bool {
     let size = (r.h * 0.5).min(26.0);
     let dim = measure_text(label, None, size as u16, 1.0);
     draw_text(label, r.x + (r.w - dim.width) / 2.0, r.y + (r.h + dim.offset_y) / 2.0, size, fg);
-    hover && is_mouse_button_pressed(MouseButton::Left)
+    enabled && crate::touch::clicked_in(r)
 }

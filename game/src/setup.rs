@@ -61,7 +61,6 @@ impl Setup {
     pub fn frame(&mut self, glow: &Glow) -> Option<(Choice, Settings)> {
         let spots = Spots::new();
         let mouse = screen_to_picture(Vec2::from(mouse_position()));
-        let clicked = is_mouse_button_pressed(MouseButton::Left);
         let rules = &mut self.settings.rules;
         let count = MAPS.len() as u8;
         if is_key_pressed(KeyCode::Left) {
@@ -71,7 +70,7 @@ impl Setup {
             rules.map = (rules.map + 1) % count;
         }
         for i in 0..MAPS.len() {
-            if clicked && spots.card(i).contains(mouse) {
+            if crate::touch::clicked_in(spots.card(i)) {
                 rules.map = i as u8;
             }
         }

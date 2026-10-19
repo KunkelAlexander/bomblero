@@ -68,10 +68,9 @@ impl Armory {
     /// One frame. Returns what to play, and with which weapons, once chosen.
     pub fn frame(&mut self, glow: &Glow) -> Option<(Choice, Vec<u8>)> {
         let mouse = screen_to_picture(Vec2::from(mouse_position()));
-        let clicked = is_mouse_button_pressed(MouseButton::Left);
         let cards = Cards::new();
         for (i, &id) in ARSENAL.iter().enumerate() {
-            if is_key_pressed(KEYS[i]) || (clicked && cards.rect(i).contains(mouse)) {
+            if is_key_pressed(KEYS[i]) || crate::touch::clicked_in(cards.rect(i)) {
                 self.toggle(id);
             }
         }
