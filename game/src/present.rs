@@ -53,6 +53,12 @@ impl Presenter {
         glow.present();
         // The HUD goes on the finished picture: its text must stay crisp.
         glow.ui();
+        // A stunned player is blinded: the arena goes white and fades back (the
+        // Flashgun). Full white for the first moment, then the rest of the stun.
+        if me.alive && me.stunned > 0.0 {
+            let l = view::layout();
+            draw_rectangle(0.0, 0.0, l.size.x, l.hud_top(), Color::new(1.0, 1.0, 1.0, (me.stunned * 0.9).min(1.0)));
+        }
         hud::draw(&replica.world, replica.me as usize, can_restart, banner, self.down_rate.per_second, self.up_rate.per_second, self.frame_ms);
     }
 

@@ -70,6 +70,21 @@ fn draw_deployables(world: &World, t: f32) {
                 draw_circle(a.x, a.y, 3.0, Color::new(c.r, c.g, c.b, alpha));
                 draw_circle(b.x, b.y, 3.0, Color::new(c.r, c.g, c.b, alpha));
             }
+            Special::Well(radius, seconds) => {
+                let grow = ((seconds - d.life) / 0.4).min(1.0);
+                let fade = (d.life / 0.5).min(1.0);
+                draw_circle(d.pos.x, d.pos.y, radius * grow, Color::new(0.1, 0.0, 0.2, 0.18 * fade));
+                // Hexagonal rings (the energy shape of the whole game) shrink
+                // into the centre while they turn: the picture of being sucked in.
+                for k in 0..4 {
+                    let phase = (t * 0.7 + k as f32 / 4.0).rem_euclid(1.0);
+                    let alpha = (phase * 6.0).min(1.0) * (1.0 - phase) * fade;
+                    let spin = t * 40.0 + k as f32 * 15.0;
+                    draw_poly_lines(d.pos.x, d.pos.y, 6, radius * grow * (1.0 - phase), spin, 2.0, Color::new(0.75, 0.45, 1.0, alpha));
+                }
+                draw_circle(d.pos.x, d.pos.y, 15.0 * grow, Color::new(0.0, 0.0, 0.02, 1.0));
+                draw_poly_lines(d.pos.x, d.pos.y, 6, 16.0 * grow, t * 60.0, 2.5, Color::new(0.85, 0.7, 1.0, fade));
+            }
             _ => {}
         }
     }
@@ -157,6 +172,24 @@ fn draw_projectiles(world: &World) {
                 draw_circle_lines(p.pos.x, p.pos.y, 5.5, 1.5, Color::new(0.1, 1.0, 0.95, 1.0));
                 draw_circle_lines(p.pos.x, p.pos.y, 3.5, 1.0, Color::new(1.0, 0.2, 0.8, 1.0));
             }
+            sim::weapons::CRACKLER
+            | sim::weapons::CRACKLE_1
+            | sim::weapons::CRACKLE_2
+            | sim::weapons::CRACKLE_3
+            | sim::weapons::CRACKLE_4 => {
+                // A yellow spark that tumbles; each generation is smaller than
+                // the one it split from.
+                let size = match p.weapon {
+                    sim::weapons::CRACKLER => 7.0,
+                    sim::weapons::CRACKLE_1 => 5.5,
+                    sim::weapons::CRACKLE_2 => 4.5,
+                    sim::weapons::CRACKLE_3 => 3.8,
+                    _ => 3.2,
+                };
+                let spin = world.tick as f32 * 9.0 + p.pos.x;
+                draw_poly(p.pos.x, p.pos.y, 4, size, spin, Color::new(1.0, 0.92, 0.3, 1.0));
+                draw_circle(p.pos.x, p.pos.y, size * 0.4, WHITE);
+            }
             sim::weapons::BOUNCER => {
                 // A spinning hollow diamond: it looks like something that bounces.
                 let spin = world.tick as f32 * 6.0;
@@ -208,6 +241,11 @@ fn draw_players(world: &World, t: f32) {
             let dir = vec2(p.aim.cos(), p.aim.sin());
             let (base, tip, side) = (p.pos + dir * (PLAYER_RADIUS + 3.0), p.pos + dir * (PLAYER_RADIUS + 13.0), vec2(-dir.y, dir.x) * 5.0);
             draw_triangle(base + side, base - side, tip, c);
+        }
+        if p.stunned > 0.0 {
+            // A white ring that flickers: blinded.
+            let flicker = 0.5 + 0.5 * (t * 30.0).sin();
+            draw_poly_lines(p.pos.x, p.pos.y, 8, 15.0 + 3.0 * flicker, t * 200.0, 2.0, Color::new(1.0, 1.0, 1.0, 0.5 + 0.5 * flicker));
         }
         if p.confused > 0.0 {
             // Stars circling the head, the cartoon sign for "dizzy".

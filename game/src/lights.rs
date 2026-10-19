@@ -69,6 +69,8 @@ pub fn from_world(world: &World, out: &mut Vec<Light>) {
             // Six missiles per shot would be six lights: not worth it. The
             // same goes for the cluster's seven bomblets.
             sim::weapons::SWARM | sim::weapons::BOMBLET => continue,
+            // Sixteen sparks would be sixteen lights; only the shell gets one.
+            sim::weapons::CRACKLE_1 | sim::weapons::CRACKLE_2 | sim::weapons::CRACKLE_3 | sim::weapons::CRACKLE_4 => continue,
             _ => (85.0, player_color(p.owner as usize), 0.75),
         };
         out.push(Light { pos: p.pos, radius, color, strength });

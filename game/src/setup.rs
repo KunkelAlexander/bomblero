@@ -210,12 +210,13 @@ impl Spots {
 
         let cards_top = if roomy { 150.0 } else { 60.0 };
         let text_h = if roomy { 60.0 } else { 36.0 };
-        let card_w = ((size.x - 48.0 - 2.0 * CARD_GAP) / 3.0).min(360.0);
+        let n = MAPS.len() as f32;
+        let card_w = ((size.x - 48.0 - (n - 1.0) * CARD_GAP) / n).min(360.0);
         // The preview keeps the arena's shape: as wide as the card allows, unless
         // the height runs out first.
         let aspect = MAP_H as f32 / MAP_W as f32;
         let preview_h = ((card_w - 16.0) * aspect).min(bots_y - 16.0 - cards_top - text_h - 8.0).max(0.0);
-        let cards_left = (size.x - 3.0 * card_w - 2.0 * CARD_GAP) / 2.0;
+        let cards_left = (size.x - n * card_w - (n - 1.0) * CARD_GAP) / 2.0;
         // On a tall screen the cards end well above the rows: move the rows up
         // under them, so the options are not stranded at the bottom.
         let bots_y = bots_y.min(cards_top + 8.0 + preview_h + text_h + 48.0);

@@ -33,6 +33,18 @@ struct Beam {
     color: Color,
     /// Thickness at the start; it fades with age.
     width: f32,
+    /// Seconds it stays: a laser fires 20 pulses a second, so its pieces are
+    /// brief and overlap into one steady line.
+    life: f32,
+}
+
+/// The flash of a flashgun: a wedge of white light that fades fast.
+struct Cone {
+    pos: Vec2,
+    aim: f32,
+    range: f32,
+    half_angle: f32,
+    age: f32,
 }
 
 /// A hexagonal shockwave (the game's "energy" shape), optionally lighting the
@@ -68,6 +80,7 @@ struct Shard {
 #[derive(Default)]
 pub struct Effects {
     beams: Vec<Beam>,
+    cones: Vec<Cone>,
     rings: Vec<Ring>,
     sparks: Vec<Spark>,
     shards: Vec<Shard>,
@@ -81,6 +94,7 @@ pub struct Effects {
 }
 
 const BEAM_LIFE: f32 = 0.25;
+const CONE_LIFE: f32 = 0.3;
 const SHARD_LIFE: f32 = 0.6;
 
 impl Effects {
@@ -90,9 +104,13 @@ impl Effects {
                 self.last_shooter = player;
                 self.ring(pos, 12.0, 0.12, player_color(player as usize), 0.0);
             }
-            Event::Beam { from, to } => {
+            Event::Beam { from, to, weapon } => {
                 let color = player_color(self.last_shooter as usize);
-                self.beams.push(Beam { from, to, age: 0.0, color, width: 5.0 });
+                let (width, life) = if weapon == sim::weapons::LASER { (3.0, 0.1) } else { (5.0, BEAM_LIFE) };
+                self.beams.push(Beam { from, to, age: 0.0, color, width, life });
+            }
+            Event::Flash { pos, aim, range, half_angle } => {
+                self.cones.push(Cone { pos, aim, range, half_angle, age: 0.0 });
             }
             Event::Explosion { pos, radius } => {
                 self.ring(pos, radius, 0.4, DANGER, 0.6);
@@ -121,7 +139,11 @@ impl Effects {
             }
             Event::Status { weapon, pos, .. } => {
                 // A puff in the colour of the spell: wool-white or dizzy violet.
-                let color = if weapon == sim::weapons::SHEEP { Color::new(1.0, 0.85, 0.95, 1.0) } else { Color::new(0.8, 0.4, 1.0, 1.0) };
+                let color = match weapon {
+                    sim::weapons::SHEEP => Color::new(1.0, 0.85, 0.95, 1.0),
+                    sim::weapons::FLASH => WHITE,
+                    _ => Color::new(0.8, 0.4, 1.0, 1.0),
+                };
                 self.ring(pos, 34.0, 0.4, color, 0.4);
                 self.burst(pos, 14, 60.0..200.0, color);
             }
@@ -183,6 +205,9 @@ impl Effects {
         for b in &mut self.beams {
             b.age += dt;
         }
+        for c in &mut self.cones {
+            c.age += dt;
+        }
         for r in &mut self.rings {
             r.age += dt;
         }
@@ -199,7 +224,8 @@ impl Effects {
         }
         self.shards.retain(|sh| sh.age < SHARD_LIFE);
         self.sparks.retain(|s| s.age < s.life);
-        self.beams.retain(|b| b.age < BEAM_LIFE);
+        self.beams.retain(|b| b.age < b.life);
+        self.cones.retain(|c| c.age < CONE_LIFE);
         self.rings.retain(|r| r.age < r.life);
     }
 
@@ -208,6 +234,10 @@ impl Effects {
         for r in self.rings.iter().filter(|r| r.light > 0.0) {
             let k = r.age / r.life;
             out.push(Light { pos: r.pos, radius: r.max_radius * 2.2, color: r.color, strength: r.light * 1.5 * (1.0 - k) });
+        }
+        // A flashgun lights the floor white, brightest at once.
+        for c in &self.cones {
+            out.push(Light { pos: c.pos, radius: c.range * 1.5, color: WHITE, strength: 1.6 * (1.0 - c.age / CONE_LIFE) });
         }
     }
 
@@ -222,8 +252,13 @@ impl Effects {
                 draw_triangle(a, b, c, color);
             }
         }
+        for c in &self.cones {
+            let fade = 1.0 - c.age / CONE_LIFE;
+            let edge = |a: f32| c.pos + vec2(a.cos(), a.sin()) * c.range;
+            draw_triangle(c.pos, edge(c.aim - c.half_angle), edge(c.aim + c.half_angle), Color::new(1.0, 1.0, 1.0, 0.55 * fade));
+        }
         for b in &self.beams {
-            let fade = 1.0 - b.age / BEAM_LIFE;
+            let fade = 1.0 - b.age / b.life;
             let c = Color::new(b.color.r, b.color.g, b.color.b, fade);
             draw_line(b.from.x, b.from.y, b.to.x, b.to.y, 1.0 + b.width * fade, c);
             draw_line(b.from.x, b.from.y, b.to.x, b.to.y, 1.5, Color::new(1.0, 1.0, 1.0, fade));

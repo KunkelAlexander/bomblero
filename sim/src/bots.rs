@@ -79,12 +79,19 @@ impl Bot {
         // Shoot when we can see the target. Without line of sight, shoot
         // sometimes anyway: rockets and rails dig through bricks, so this is
         // how a bot opens a path toward you.
-        // Never dig into a wall that is close enough for the blast to hurt us.
+        // Never dig into a wall that is close enough for the blast to hurt us:
+        // there the bot chips with the blaster instead (no blast, so it is safe
+        // at any range). Without this, a bot sealed into a pocket (the Quarry)
+        // would stand still for the whole match.
         let aim_dir = vec2(input.aim.cos(), input.aim.sin());
         let wall_is_far = world.map.distance_to_wall(player.pos, aim_dir, 200.0) > 110.0;
-        input.fire = if sees { self.rng.f32() < 0.9 } else { wall_is_far && self.rng.f32() < 0.25 };
+        input.fire = if sees { self.rng.f32() < 0.9 } else { self.rng.f32() < 0.25 };
 
-        input.weapon = self.pick_weapon(world, me, dist, sees);
+        input.weapon = self.pick_weapon(world, me, dist, sees, wall_is_far);
+        // The blaster is busy reloading and a rocket is still selected: wait.
+        if !sees && !wall_is_far && player.weapons[input.weapon as usize].id != BLASTER {
+            input.fire = false;
+        }
         input
     }
 
@@ -93,8 +100,10 @@ impl Bot {
     /// what a bot uses against a target it cannot see: bolts that come round
     /// corners. Bots never drop bombs or build blocks: placing one and walking
     /// away (or hiding behind it) is a plan, and bots do not make plans.
-    fn pick_weapon(&self, world: &World, me: usize, dist: f32, sees: bool) -> u8 {
-        let preferred: &[u8] = if !sees {
+    fn pick_weapon(&self, world: &World, me: usize, dist: f32, sees: bool, wall_is_far: bool) -> u8 {
+        let preferred: &[u8] = if !sees && !wall_is_far {
+            &[BLASTER]
+        } else if !sees {
             &[ROCKET, BOUNCER, RAILGUN, BLASTER]
         } else if dist > 450.0 {
             &[RAILGUN, ROCKET, BOUNCER, BLASTER]

@@ -2,7 +2,7 @@
 // Liero's weapon menu. It sits between the menu and the match, so it is reached
 // from every way of playing (offline, hosting, joining).
 //
-// Why a loadout at all: with fourteen weapons a fixed set would be a list of
+// Why a loadout at all: with eighteen weapons a fixed set would be a list of
 // everything, and the choice is half the game. Picking five means a player can
 // be the one with the Nova and the Railgun, and the others have to play around it.
 //
@@ -12,8 +12,8 @@
 
 use macroquad::prelude::*;
 use sim::weapons::{
-    ARSENAL, BLASTER, BOMB, BOUNCER, BUILD, CLUSTER, CONFUSER, LOADOUT_SIZE, MIRROR, NOVA, OIL, RAILGUN, ROCKET, SHEEP,
-    SWARM, TELEPORT, WEAPONS,
+    ARSENAL, BLACKHOLE, BLASTER, BOMB, BOUNCER, BUILD, CLUSTER, CONFUSER, CRACKLER, FLASH, LASER, LOADOUT_SIZE, MIRROR,
+    NOVA, OIL, RAILGUN, ROCKET, SHEEP, SWARM, TELEPORT, WEAPONS,
 };
 
 use crate::draw::{button, center_wide, player_color};
@@ -30,8 +30,6 @@ const TEXT: Color = Color::new(0.92, 0.93, 0.96, 1.0);
 // against the dark cards (0.45 was about 3:1: hard to read on a dim screen).
 const TEXT_DIM: Color = Color::new(0.6, 0.62, 0.67, 1.0);
 const CARD_BG: Color = Color::new(0.075, 0.08, 0.095, 1.0);
-
-const CARD_GAP: f32 = 10.0;
 
 /// One line about each weapon, for the card. Client-only text, so it lives here
 /// and not in the sim's weapon table (which only holds what the rules need).
@@ -52,6 +50,10 @@ fn blurb(id: u8) -> &'static str {
         CONFUSER => "mirrors an enemy's screen for 4 seconds",
         MIRROR => "a pane that sends enemy shots back",
         OIL => "a puddle: everyone in it slides",
+        LASER => "hold to fire: a beam that bounces off walls",
+        CRACKLER => "splits four times into sixteen sparks",
+        BLACKHOLE => "pulls everyone nearby in and holds them",
+        FLASH => "a blinding cone that stuns for a moment",
         _ => "",
     }
 }
@@ -210,6 +212,9 @@ struct Cards {
     top: f32,
     w: f32,
     h: f32,
+    /// Space between cards: down a column, and between columns.
+    gap: f32,
+    col_gap: f32,
 }
 
 impl Cards {
@@ -217,11 +222,14 @@ impl Cards {
         let size = view::layout().size;
         let cols = if size.x >= 560.0 { 3 } else { 2 };
         let rows = ARSENAL.len().div_ceil(cols) as f32;
-        let (top, bottom) = if size.y >= 700.0 { (168.0, 130.0) } else { (60.0, 50.0) };
-        let w = ((size.x - 60.0 - (cols - 1) as f32 * 40.0) / cols as f32).min(560.0);
-        let h = ((size.y - top - bottom) / rows - CARD_GAP).min(76.0);
-        let left = (size.x - cols as f32 * w - (cols - 1) as f32 * 40.0) / 2.0;
-        Cards { cols, left, top, w, h }
+        // Six rows of cards need every pixel on a short screen: tighter gaps,
+        // and on a roomy one a shorter heading.
+        let (top, bottom, gap) = if size.y >= 700.0 { (146.0, 130.0, 10.0) } else { (60.0, 50.0, 6.0) };
+        let col_gap = if size.x < 900.0 { 16.0 } else { 40.0 };
+        let w = ((size.x - 60.0 - (cols - 1) as f32 * col_gap) / cols as f32).min(560.0);
+        let h = ((size.y - top - bottom) / rows - gap).min(76.0);
+        let left = (size.x - cols as f32 * w - (cols - 1) as f32 * col_gap) / 2.0;
+        Cards { cols, left, top, w, h, gap, col_gap }
     }
 
     /// Whether there is room for the help lines.
@@ -253,6 +261,6 @@ impl Cards {
     fn rect(&self, i: usize) -> Rect {
         let rows = ARSENAL.len().div_ceil(self.cols);
         let (col, row) = (i / rows, i % rows);
-        Rect::new(self.left + col as f32 * (self.w + 40.0), self.top + row as f32 * (self.h + CARD_GAP), self.w, self.h)
+        Rect::new(self.left + col as f32 * (self.w + self.col_gap), self.top + row as f32 * (self.h + self.gap), self.w, self.h)
     }
 }

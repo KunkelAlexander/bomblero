@@ -79,6 +79,14 @@ const SLICK_ACCEL: f32 = 1.2;
 /// At most this many panes and puddles exist at once; a new one beyond that
 /// replaces the oldest. A cap keeps a spammed gadget from growing snapshots.
 const MAX_DEPLOYABLES: usize = 12;
+/// How often a bouncing beam may turn (the laser): four straight pieces at most.
+const MAX_BOUNCES: usize = 3;
+/// A Crackler splits into two, this many radians either side of its heading.
+const FORK_ANGLE: f32 = 0.4;
+/// Pull of a black hole, in px/s per second, before it fades towards the edge.
+/// The usual `ACCEL` rule fights it: a walking player (220 px/s) is held inside
+/// about half the radius, and only a dash gets out.
+const WELL_PULL: f32 = 6000.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WeaponState {
@@ -118,6 +126,9 @@ pub struct Player {
     /// client mirrors that player's screen. Because it lives in `Player`, it
     /// reaches every client in the ordinary snapshot, with no new message.
     pub confused: f32,
+    /// Seconds left stunned (Flashgun): cannot move, dash or shoot. The client
+    /// also whites out that player's screen.
+    pub stunned: f32,
 }
 
 impl Player {
@@ -158,7 +169,11 @@ pub struct Projectile {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Event {
     Shot { player: u8, weapon: u8, pos: Vec2 },
-    Beam { from: Vec2, to: Vec2 },
+    /// One straight piece of a beam, fired by `weapon`. A bouncing beam makes
+    /// several of these in one shot.
+    Beam { from: Vec2, to: Vec2, weapon: u8 },
+    /// A flashgun went off at `pos`, aimed along `aim`.
+    Flash { pos: Vec2, aim: f32, range: f32, half_angle: f32 },
     Explosion { pos: Vec2, radius: f32 },
     Hit { victim: u8, pos: Vec2, damage: f32 },
     /// A brick got damaged or destroyed. This doubles as the "dirty flag" of
@@ -215,6 +230,7 @@ impl World {
                 dash_cooldown: 0.0,
                 sheep: 0.0,
                 confused: 0.0,
+                stunned: 0.0,
             })
             .collect();
         World {
@@ -275,10 +291,12 @@ impl World {
         }
 
         let on_slick = self.on_slick(self.players[i].pos);
+        let pull = self.well_pull(self.players[i].pos);
         let p = &mut self.players[i];
         p.invuln = (p.invuln - DT).max(0.0);
         p.sheep = (p.sheep - DT).max(0.0);
         p.confused = (p.confused - DT).max(0.0);
+        p.stunned = (p.stunned - DT).max(0.0);
         if input.aim.is_finite() {
             p.aim = input.aim;
         }
@@ -299,15 +317,21 @@ impl World {
 
         // Movement. Never trust the input: clamp the length so nobody can
         // send move_dir = (1000, 0) and run 1000x faster.
-        let dir = if input.move_dir.is_finite() { input.move_dir.clamp_length_max(1.0) } else { Vec2::ZERO };
+        let dir = if input.move_dir.is_finite() && p.stunned == 0.0 { input.move_dir.clamp_length_max(1.0) } else { Vec2::ZERO };
         let wanted = dir * if p.sheep > 0.0 { MOVE_SPEED * SHEEP_SPEED } else { MOVE_SPEED };
         let accel = if on_slick { SLICK_ACCEL } else { ACCEL };
         p.vel += (wanted - p.vel) * (accel * DT).min(1.0);
+        p.vel += pull * DT;
 
         // Dash: resting arms it, pushing uses it up (see `DASH_REST`).
         p.dash_cooldown = (p.dash_cooldown - DT).max(0.0);
         let mut dashed = false;
-        if dir.length() < 0.2 {
+        if p.stunned > 0.0 {
+            // Stunned players cannot dash, and must not come out of it with the
+            // dash already armed by standing still.
+            p.still = 0.0;
+            p.dash_armed = 0.0;
+        } else if dir.length() < 0.2 {
             p.still += DT;
             if p.still >= DASH_REST {
                 p.dash_armed = DASH_WINDOW;
@@ -355,7 +379,7 @@ impl World {
         let (pos, aim, slot) = (p.pos, p.aim, p.current);
         let w = &p.weapons[slot];
         // A sheep has no hands: it cannot shoot.
-        if w.cooldown > 0.0 || w.reload > 0.0 || w.ammo == 0 || p.sheep > 0.0 {
+        if w.cooldown > 0.0 || w.reload > 0.0 || w.ammo == 0 || p.sheep > 0.0 || p.stunned > 0.0 {
             return;
         }
         let id = w.id;
@@ -419,8 +443,9 @@ impl World {
             }
             Kind::Beam => {
                 let angle = aim + self.rng.range(-def.spread, def.spread);
-                self.fire_beam(i, def, muzzle, vec2(angle.cos(), angle.sin()));
+                self.fire_beam(i, id, def, muzzle, vec2(angle.cos(), angle.sin()));
             }
+            Kind::Flash => self.fire_flash(i, id, def, pos, aim),
             // A placed block is an ordinary brick, so it needs no new rules,
             // drawing or network message: joiners learn about it from the same
             // `TileChanged` event that reports a destroyed one.
@@ -441,7 +466,9 @@ impl World {
     /// Put a pane or a puddle into the arena, replacing the oldest one if the
     /// arena is full. How long it lasts is part of the weapon's `Special`.
     fn deploy(&mut self, owner: usize, weapon: u8, pos: Vec2, angle: f32) {
-        let (Special::Mirror(_, life) | Special::Slick(_, life)) = WEAPONS[weapon as usize].special else { return };
+        let (Special::Mirror(_, life) | Special::Slick(_, life) | Special::Well(_, life)) = WEAPONS[weapon as usize].special else {
+            return;
+        };
         if self.deployables.len() >= MAX_DEPLOYABLES {
             self.deployables.remove(0);
         }
@@ -453,6 +480,23 @@ impl World {
         self.deployables
             .iter()
             .any(|d| matches!(WEAPONS[d.weapon as usize].special, Special::Slick(radius, _) if d.pos.distance(pos) < radius))
+    }
+
+    /// The sum of the pulls of every black hole that reaches `pos`, as an
+    /// acceleration towards its centre. It grows towards the centre, but fades
+    /// out in the last few pixels, so a held player settles in the middle
+    /// instead of shooting back and forth through it.
+    fn well_pull(&self, pos: Vec2) -> Vec2 {
+        let mut pull = Vec2::ZERO;
+        for d in &self.deployables {
+            let Special::Well(radius, _) = WEAPONS[d.weapon as usize].special else { continue };
+            let to = d.pos - pos;
+            let dist = to.length();
+            if dist < radius && dist > 0.5 {
+                pull += to / dist * WELL_PULL * (1.0 - dist / radius) * (dist / 12.0).min(1.0);
+            }
+        }
+        pull
     }
 
     /// Mirror pane: did the step from `before` to `pr.pos` carry the projectile
@@ -510,26 +554,70 @@ impl World {
     }
 
     /// Hitscan: no flying object, the line is resolved instantly.
-    fn fire_beam(&mut self, owner: usize, def: &WeaponDef, origin: Vec2, dir: Vec2) {
-        // 1) The beam ends at the first wall or brick. A brick it ends on is
-        //    hurt by `tile_damage` (the rail destroys exactly that one).
-        let reach = self.map.distance_to_wall(origin, dir, def.range);
-        let end = origin + dir * reach;
-        self.events.push(Event::Beam { from: origin, to: end });
-        if reach < def.range && def.tile_damage > 0 {
-            let (tx, ty) = tile_coords(end);
-            self.hurt_tile(tx, ty, def.tile_damage);
-        }
+    ///
+    /// The beam ends at the first wall or brick. A brick it ends on is hurt by
+    /// `tile_damage` (the rail destroys exactly that one, the laser none). A
+    /// beam with `bounce` (the laser) turns at a solid wall and goes on, up to
+    /// `MAX_BOUNCES` times or until its `range` is used up; a brick still ends it.
+    fn fire_beam(&mut self, owner: usize, weapon: u8, def: &WeaponDef, origin: Vec2, dir: Vec2) {
+        let (mut from, mut dir, mut left) = (origin, dir, def.range);
+        // Each player is hit once per shot, however many pieces of the beam cross them.
+        let mut hit = vec![false; self.players.len()];
+        for piece in 0..=MAX_BOUNCES {
+            let (reach, tile, normal) = self.map.ray(from, dir, left);
+            let end = from + dir * reach;
+            self.events.push(Event::Beam { from, to: end, weapon });
 
-        // 2) Everything within reach of that line gets hit. The beam pierces
-        //    players, so it is not a "first hit only" test.
+            // Everything within reach of that line gets hit. The beam pierces
+            // players, so it is not a "first hit only" test. The shooter is safe
+            // from the first piece (it starts inside them) but not from a
+            // bounce that comes back.
+            for v in 0..self.players.len() {
+                if hit[v] || !self.players[v].alive || (v == owner && piece == 0) {
+                    continue;
+                }
+                if point_segment_distance(self.players[v].pos, from, end) < self.players[v].hit_radius() + BEAM_SLACK {
+                    hit[v] = true;
+                    self.damage_player(v, def.damage, owner, dir * def.knockback);
+                }
+            }
+
+            let Some((tx, ty)) = tile else { break };
+            if def.tile_damage > 0 {
+                self.hurt_tile(tx, ty, def.tile_damage);
+            }
+            left -= reach;
+            let solid = self.map.get(tx, ty) == Tile::Solid;
+            if !(def.bounce && solid && left > 0.0 && normal != Vec2::ZERO) {
+                break;
+            }
+            dir -= 2.0 * dir.dot(normal) * normal;
+            from = end;
+        }
+    }
+
+    /// Flashgun: everyone in a cone in front of you, and in line of sight, is
+    /// stunned. The cone is tested by angle, widened by the body's size so a
+    /// player half inside the edge counts (see `BEAM_SLACK` for the same idea).
+    fn fire_flash(&mut self, owner: usize, weapon: u8, def: &WeaponDef, origin: Vec2, aim: f32) {
+        let Special::Stun(secs, half_angle) = def.special else { return };
+        let dir = vec2(aim.cos(), aim.sin());
+        self.events.push(Event::Flash { pos: origin, aim, range: def.range, half_angle });
         for v in 0..self.players.len() {
-            if v == owner || !self.players[v].alive {
+            let p = &self.players[v];
+            let to = p.pos - origin;
+            let dist = to.length();
+            if v == owner || !p.alive || p.invuln > 0.0 || dist > def.range || dist < 1.0 {
                 continue;
             }
-            if point_segment_distance(self.players[v].pos, origin, end) < self.players[v].hit_radius() + BEAM_SLACK {
-                self.damage_player(v, def.damage, owner, dir * def.knockback);
+            let slack = (p.hit_radius() / dist).min(1.0).asin();
+            let off_axis = dir.dot(to / dist).clamp(-1.0, 1.0).acos();
+            if off_axis > half_angle + slack || !self.map.line_of_sight(origin, p.pos) {
+                continue;
             }
+            self.players[v].stunned = secs;
+            let pos = self.players[v].pos;
+            self.events.push(Event::Status { victim: v as u8, weapon, pos });
         }
     }
 
@@ -556,6 +644,7 @@ impl World {
         p.invuln = SPAWN_INVULN;
         p.sheep = 0.0;
         p.confused = 0.0;
+        p.stunned = 0.0;
         p.weapons = p.weapons.iter().map(|w| full_weapon(w.id)).collect();
         self.events.push(Event::Respawned { player: i as u8 });
     }
@@ -651,7 +740,7 @@ impl World {
                 // wall or at the end of its fuse. Bursting on someone put all
                 // seven bomblets on them at once: a one-shot kill up close,
                 // which is not what an area weapon is for.
-                let passes_players = matches!(def.special, Special::Cluster(..));
+                let passes_players = matches!(def.special, Special::Cluster(..) | Special::Fork(..));
                 let hit = (0..self.players.len()).find(|&j| {
                     !passes_players
                         && j != pr.owner as usize
@@ -667,7 +756,10 @@ impl World {
             if pr.life <= 0.0 {
                 // The end of the flight is an impact with nothing: shells burst,
                 // orbs land and rockets blow up where they are.
-                if def.blast_radius > 0.0 || matches!(def.special, Special::Cluster(..) | Special::Teleport | Special::Slick(..)) {
+                if def.blast_radius > 0.0 || matches!(
+                    def.special,
+                    Special::Cluster(..) | Special::Fork(..) | Special::Teleport | Special::Slick(..) | Special::Well(..)
+                ) {
                     self.impact(&pr, def, dir, None, None);
                 }
                 continue;
@@ -700,6 +792,26 @@ impl World {
     /// `radius` fits. A projectile that hit a wall is a few pixels inside it.
     fn free_point(&self, pos: Vec2, dir: Vec2, radius: f32) -> Option<Vec2> {
         (0..20).map(|k| pos - dir * (2.0 * k as f32)).find(|&p| !self.map.circle_hits_wall(p, radius))
+    }
+
+    /// Crackler: the shell splits into two children, one each side of the way it
+    /// was flying, with a little random twist (from the sim's own `rng`, so every
+    /// machine splits the same way). Each child is the next generation's row of
+    /// the weapon table, which splits again, and so four splits make sixteen.
+    fn fork(&mut self, pr: &Projectile, dir: Vec2, child: u8) {
+        let def = &WEAPONS[child as usize];
+        let at = self.free_point(pr.pos, dir, PROJECTILE_RADIUS).unwrap_or(pr.pos);
+        let heading = dir.y.atan2(dir.x);
+        for side in [-1.0, 1.0] {
+            let a = heading + side * FORK_ANGLE + self.rng.range(-0.1, 0.1);
+            self.projectiles.push(Projectile {
+                pos: at,
+                vel: vec2(a.cos(), a.sin()) * def.speed,
+                weapon: child,
+                owner: pr.owner,
+                life: def.lifetime,
+            });
+        }
     }
 
     /// Cluster: the shell splits into `count` children, spread evenly around the
@@ -750,7 +862,8 @@ impl World {
         match def.special {
             Special::Cluster(count, child) => return self.burst(pr, dir, count, child),
             Special::Teleport => return self.teleport(pr, dir, victim),
-            Special::Slick(..) => {
+            Special::Fork(child) => return self.fork(pr, dir, child),
+            Special::Slick(..) | Special::Well(..) => {
                 // Pool where it landed, on the side it came from (see `explode`).
                 let at = self.free_point(pr.pos, dir, PROJECTILE_RADIUS).unwrap_or(pr.pos);
                 return self.deploy(pr.owner as usize, pr.weapon, at, 0.0);
@@ -850,7 +963,8 @@ mod tests {
     use super::*;
     use crate::tilemap::MAP_GRID;
     use crate::weapons::{
-        ARSENAL, BLASTER, BOMB, BOMBLET, BOUNCER, BUILD, CLUSTER, CONFUSER, MIRROR, NOVA, OIL, RAILGUN, ROCKET, SHEEP, SWARM,
+        ARSENAL, BLACKHOLE, BLASTER, BOMB, BOMBLET, BOUNCER, BUILD, CLUSTER, CONFUSER, CRACKLE_4, CRACKLER, FLASH, LASER,
+        MIRROR, NOVA, OIL, RAILGUN, ROCKET, SHEEP, SWARM,
         TELEPORT,
     };
 
@@ -1422,5 +1536,172 @@ mod tests {
         fire_once(&mut w, 0, 2, std::f32::consts::PI);
         assert_eq!(w.players[0].weapons[2].ammo, mag);
         assert!(w.deployables.is_empty());
+    }
+
+    // ---- the second set of gadgets ----------------------------------------------
+
+    /// An empty arena with a wall all round: no bricks, no obstacles.
+    fn arena() -> Tilemap {
+        let rows: Vec<String> = (0..crate::tilemap::MAP_H)
+            .map(|y| {
+                if y == 0 || y == crate::tilemap::MAP_H - 1 {
+                    "#".repeat(crate::tilemap::MAP_W)
+                } else if y == 1 {
+                    format!("#S{}#", ".".repeat(crate::tilemap::MAP_W - 3)) // World::new needs a spawn
+                } else {
+                    format!("#{}#", ".".repeat(crate::tilemap::MAP_W - 2))
+                }
+            })
+            .collect();
+        Tilemap::from_ascii(&rows.join("
+"))
+    }
+
+    /// Slots: 0 Bounce Laser, 1 Crackler, 2 Black Hole, 3 Flashgun, 4 Blaster.
+    fn gadget_arena() -> World {
+        let mut w = World::new(arena(), 2, &[LASER, CRACKLER, BLACKHOLE, FLASH, BLASTER], 1);
+        w.players[0].pos = tile_center(5, 18);
+        w.players[1].pos = tile_center(30, 3);
+        w
+    }
+
+    #[test]
+    fn the_laser_bounces_off_a_wall_and_hits_what_the_rail_cannot() {
+        // Shooting down and right from (5, 18): the floor is 80 px below, so the
+        // beam turns there and comes back up through (10, 18), which a
+        // straight beam never reaches.
+        let aim = std::f32::consts::FRAC_PI_4;
+        let mut w = gadget_arena();
+        w.players[1].pos = tile_center(10, 18);
+        fire_once(&mut w, 0, 0, aim);
+        assert!(w.players[1].hp < MAX_HP, "the bounced beam hit");
+
+        let mut w = World::new(arena(), 2, &[RAILGUN], 1);
+        w.players[0].pos = tile_center(5, 18);
+        w.players[1].pos = tile_center(10, 18);
+        fire_once(&mut w, 0, 0, aim);
+        assert_eq!(w.players[1].hp, MAX_HP, "a beam that does not bounce stops at the floor");
+    }
+
+    #[test]
+    fn a_bouncing_beam_is_several_pieces() {
+        let mut w = gadget_arena();
+        w.drain_events();
+        w.step(&[Input { fire: true, weapon: 0, aim: std::f32::consts::FRAC_PI_4, ..Default::default() }]);
+        let pieces = w.drain_events().iter().filter(|e| matches!(e, Event::Beam { weapon: LASER, .. })).count();
+        assert!(pieces >= 2, "{pieces} pieces");
+        assert!(pieces <= MAX_BOUNCES + 1);
+    }
+
+    #[test]
+    fn the_laser_stops_at_a_brick_and_leaves_it_whole() {
+        let mut w = gadget_arena();
+        w.map.set(8, 18, Tile::Brick(BRICK_HP));
+        w.players[1].pos = tile_center(12, 18);
+        fire_once(&mut w, 0, 0, 0.0);
+        assert_eq!(w.map.get(8, 18), Tile::Brick(BRICK_HP));
+        assert_eq!(w.players[1].hp, MAX_HP);
+    }
+
+    #[test]
+    fn holding_fire_drains_the_laser_by_the_second() {
+        let mut w = gadget_arena();
+        for _ in 0..60 {
+            w.step(&[Input { fire: true, weapon: 0, ..Default::default() }]);
+        }
+        let left = w.players[0].weapons[0].ammo as i32;
+        // 20 pulses a second out of 60.
+        assert!((38..=42).contains(&left), "{left} pulses left after one second");
+    }
+
+    #[test]
+    fn a_crackler_shell_ends_as_sixteen_sparks() {
+        let mut w = gadget_arena();
+        w.players[0].pos = tile_center(5, 10); // mid-height: the fan has room to open
+        let mut most = 0;
+        w.step(&[Input { fire: true, weapon: 1, ..Default::default() }]);
+        for _ in 0..120 {
+            w.step(&[]);
+            let sparks = w.projectiles.iter().filter(|p| p.weapon == CRACKLE_4).count();
+            most = most.max(sparks);
+        }
+        assert_eq!(most, 16);
+        assert!(w.projectiles.is_empty(), "and every one of them went off");
+    }
+
+    #[test]
+    fn a_black_hole_pulls_players_in_and_holds_them() {
+        let mut w = gadget_arena();
+        let centre = tile_center(20, 10);
+        w.deployables.push(Deployable { pos: centre, angle: 0.0, weapon: BLACKHOLE, owner: 1, life: 5.0 });
+        w.players[0].pos = centre + vec2(-100.0, 0.0);
+        w.players[1].pos = centre + vec2(300.0, 0.0); // far outside its reach
+        let far_before = w.players[1].pos;
+        for _ in 0..90 {
+            w.step(&[]);
+        }
+        assert!(w.players[0].pos.distance(centre) < 15.0, "pulled to the middle: {}", w.players[0].pos.distance(centre));
+        assert_eq!(w.players[1].pos, far_before);
+        // Walking away from the middle does not get you out.
+        for _ in 0..60 {
+            w.step(&[Input { move_dir: vec2(-1.0, 0.0), ..Default::default() }]);
+        }
+        assert!(w.players[0].pos.distance(centre) < 60.0, "held: {}", w.players[0].pos.distance(centre));
+    }
+
+    #[test]
+    fn a_black_hole_orb_opens_where_it_lands() {
+        let mut w = gadget_arena();
+        fire_once(&mut w, 0, 2, 0.0);
+        for _ in 0..40 {
+            w.step(&[]); // the orb flies for a second before it lands
+        }
+        assert_eq!(w.deployables.len(), 1);
+        assert_eq!(w.deployables[0].weapon, BLACKHOLE);
+    }
+
+    #[test]
+    fn the_flashgun_stuns_a_player_in_front_and_only_in_front() {
+        let mut w = gadget_arena();
+        w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
+        fire_once(&mut w, 0, 3, 0.0);
+        assert!(w.players[1].stunned > 0.0);
+
+        let mut w = gadget_arena();
+        w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
+        fire_once(&mut w, 0, 3, std::f32::consts::PI);
+        assert_eq!(w.players[1].stunned, 0.0, "behind the shooter");
+
+        let mut w = gadget_arena();
+        w.players[1].pos = w.players[0].pos + vec2(500.0, 0.0);
+        fire_once(&mut w, 0, 3, 0.0);
+        assert_eq!(w.players[1].stunned, 0.0, "out of range");
+
+        let mut w = gadget_arena();
+        w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
+        w.map.set(8, 18, Tile::Brick(BRICK_HP));
+        fire_once(&mut w, 0, 3, 0.0);
+        assert_eq!(w.players[1].stunned, 0.0, "behind a brick");
+    }
+
+    #[test]
+    fn a_stunned_player_cannot_move_or_shoot() {
+        let mut w = gadget_arena();
+        w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
+        w.players[1].weapons = vec![full_weapon(BLASTER)];
+        fire_once(&mut w, 0, 3, 0.0);
+        let stuck_at = w.players[1].pos;
+        let mag = WEAPONS[BLASTER as usize].mag;
+        for _ in 0..30 {
+            w.step(&[Input::default(), Input { move_dir: vec2(1.0, 0.0), fire: true, ..Default::default() }]);
+        }
+        assert!(w.players[1].stunned > 0.0);
+        assert!(w.players[1].pos.distance(stuck_at) < 1.0);
+        assert_eq!(w.players[1].weapons[0].ammo, mag);
+        // ...and after the stun they can again.
+        for _ in 0..(1.5 / DT) as i32 {
+            w.step(&[]);
+        }
+        assert_eq!(w.players[1].stunned, 0.0);
     }
 }

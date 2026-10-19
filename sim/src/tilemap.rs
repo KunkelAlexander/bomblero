@@ -139,6 +139,35 @@ impl Tilemap {
         max
     }
 
+    /// Like `distance_to_wall`, but also says what it hit: the distance to the
+    /// last free spot, the blocking tile, and the direction that tile's face
+    /// points (so a beam can bounce). The face is found as a ricocheting
+    /// projectile finds it: try each axis of the last step on its own, and
+    /// the axis that is blocked is the wall we hit. A corner hit bounces
+    /// straight back. Nothing in the way gives `(max, None, ZERO)`.
+    pub fn ray(&self, from: Vec2, dir: Vec2, max: f32) -> (f32, Option<(i32, i32)>, Vec2) {
+        let mut d = 0.0;
+        while d < max {
+            if self.tile_at(from + dir * d).blocks() {
+                let free = (d - 4.0).max(0.0);
+                let before = from + dir * free;
+                let step = dir * (d - free);
+                let hit_x = self.tile_at(before + vec2(step.x, 0.0)).blocks();
+                let hit_y = self.tile_at(before + vec2(0.0, step.y)).blocks();
+                let corner = !hit_x && !hit_y;
+                let normal = vec2(
+                    if hit_x || corner { -step.x.signum() } else { 0.0 },
+                    if hit_y || corner { -step.y.signum() } else { 0.0 },
+                );
+                // Starting inside a wall (no step): there is no face to bounce off.
+                let normal = if step == Vec2::ZERO { Vec2::ZERO } else { normal.normalize_or_zero() };
+                return (free, Some(tile_coords(from + dir * d)), normal);
+            }
+            d += 4.0;
+        }
+        (max, None, Vec2::ZERO)
+    }
+
     /// Can `a` see `b`? Marches along the segment in small steps.
     /// Why marching and not an exact grid walk: the tiles are 32 px and we step
     /// 4 px, so it can only miss a corner graze, and it is much easier to read.
@@ -246,6 +275,36 @@ pub const MAP_PINBALL: &str = "\
 #.........S..................S.........#
 ########################################";
 
+/// Map 4: "Quarry". No internal walls at all: the arena is one solid pile of
+/// bricks, and each of the six spawns sits in a tiny sealed pocket (four
+/// corners, plus the middle of each side). Nobody can see or reach anybody
+/// until someone digs, so the first minute is pure demolition, and every tunnel
+/// is one somebody blasted. The pockets are the only way a spawn is open: the
+/// playability test lets a path run through bricks here (see there).
+pub const MAP_QUARRY: &str = "\
+########################################
+#S..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..S#
+#...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...#
+#...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#S..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...#
+#...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..S#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb#
+#...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...#
+#...bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb...#
+#S..bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb..S#
+########################################";
+
 /// The menu's map: a plaza with a shooting range, and three alcoves at the
 /// bottom, one per menu option. The player WALKS to a choice instead of picking
 /// it from a list, so the menu is also the controls tutorial. It is an ordinary
@@ -288,10 +347,11 @@ pub struct MapDef {
 
 /// The maps of the setup screen, in its order. The hub is not one of them: it
 /// is the menu, not a place to play a match.
-pub const MAPS: [MapDef; 3] = [
+pub const MAPS: [MapDef; 4] = [
     MapDef { name: "Grid", blurb: "walls, bricks and an open plaza", art: MAP_GRID },
     MapDef { name: "Anthill", blurb: "solid earth: dig your own way", art: MAP_ANTHILL },
     MapDef { name: "Pinball", blurb: "open, unbreakable, bouncy", art: MAP_PINBALL },
+    MapDef { name: "Quarry", blurb: "sealed in bricks: dig to find them", art: MAP_QUARRY },
 ];
 
 #[cfg(test)]
@@ -312,17 +372,27 @@ mod tests {
     /// players, and spawns that can all reach each other without breaking a
     /// brick. Otherwise someone could start a match walled in, and the bots,
     /// who only dig when they have to, might never find anyone.
+    /// The one exception is the Quarry, which seals every spawn in bricks on
+    /// purpose: there the spawns only have to be connected through bricks (never
+    /// through rock), because digging out is the whole point.
     #[test]
     fn every_map_is_playable() {
+        const SEALED_ON_PURPOSE: [&str; 1] = ["Quarry"];
         for def in &MAPS {
             let map = Tilemap::from_ascii(def.art);
             assert!(map.spawns.len() >= 4, "{} needs at least 4 spawns", def.name);
-            // Flood fill from the first spawn through empty tiles.
+            let digging_ok = SEALED_ON_PURPOSE.contains(&def.name);
+            // Flood fill from the first spawn through empty tiles (and bricks, where digging is the point).
             let (sx, sy) = tile_coords(map.spawns[0]);
             let mut seen = vec![false; MAP_W * MAP_H];
             let mut todo = vec![(sx, sy)];
             while let Some((x, y)) = todo.pop() {
-                if map.get(x, y) != Tile::Empty || seen[y as usize * MAP_W + x as usize] {
+                let open = match map.get(x, y) {
+                    Tile::Empty => true,
+                    Tile::Brick(_) => digging_ok,
+                    Tile::Solid => false,
+                };
+                if !open || seen[y as usize * MAP_W + x as usize] {
                     continue;
                 }
                 seen[y as usize * MAP_W + x as usize] = true;
