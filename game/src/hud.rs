@@ -35,7 +35,7 @@ const BAR_H: f32 = 44.0;
 
 /// `down`/`up` are bytes per second on the wire; `banner` is a line of status
 /// (room code, ping) from whoever is playing; `frame_ms` the time per frame.
-pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32, up: f32, frame_ms: f32) {
+pub fn draw(world: &World, me: usize, end_hint: &str, banner: &str, down: f32, up: f32, frame_ms: f32) {
     let l = view::layout();
     let (top, width) = (l.hud_top(), l.size.x);
     let bar_y = top + 8.0;
@@ -65,7 +65,7 @@ pub fn draw(world: &World, me: usize, can_restart: bool, banner: &str, down: f32
         right_text(&net, width - 16.0, status_y + 38.0, 14.0, TEXT_DIM);
     }
 
-    draw_messages(world, me, can_restart, &l);
+    draw_messages(world, me, end_hint, &l);
 }
 
 /// Your health is the top edge of the strip: a line in your colour that shrinks
@@ -197,7 +197,7 @@ fn draw_scores(world: &World, me: usize, mut x: f32, bar_y: f32) {
 
 /// The two messages that belong over the arena. They get a dark plate so they
 /// stay readable on top of whatever is behind them.
-fn draw_messages(world: &World, me: usize, can_restart: bool, l: &Layout) {
+fn draw_messages(world: &World, me: usize, end_hint: &str, l: &Layout) {
     // Centred on the arena part of the picture.
     let cy = l.hud_top() / 2.0;
     if !world.players[me].alive {
@@ -208,10 +208,13 @@ fn draw_messages(world: &World, me: usize, can_restart: bool, l: &Layout) {
     if let Some(w) = world.winner {
         plate(cy - 87.0, 120.0, l.size.x);
         center_wide(&format!("PLAYER {} WINS", w + 1), cy - 35.0, 70.0, player_color(w as usize));
-        // Only the host owns the match, so only the host can start a new one.
-        let hint = if can_restart && crate::touch::active() { "tap for a new match" } else if can_restart { "press R for a new match" } else { "waiting for the host to start a new match" };
-        center_wide(hint, cy + 10.0, 28.0, TEXT_DIM);
+        center_wide(end_hint, cy + 10.0, 28.0, TEXT_DIM);
     }
+}
+
+/// "press R to ..." on a keyboard, "tap to ..." on a touchscreen.
+pub fn press_r(to: &str) -> String {
+    if crate::touch::active() { format!("tap to {to}") } else { format!("press R to {to}") }
 }
 
 fn plate(y: f32, h: f32, width: f32) {

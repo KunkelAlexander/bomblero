@@ -63,8 +63,24 @@ enum Screen {
     Armory(Armory),
     /// A match whose host runs in this process: offline, or with a room open.
     Hosting(HostGame),
+    /// The host pressed R: map and weapons again, then the same room plays on.
+    Rematch(Rematch),
     /// A match hosted by a friend.
     Joined(JoinGame),
+}
+
+/// The two screens between R and the next match. The old match is kept (and
+/// taken out again when the next one starts) because it owns the room: the
+/// friends in it stay connected, frozen on the result screen, instead of being
+/// kicked and having to rejoin.
+struct Rematch {
+    game: Option<HostGame>,
+    step: RematchStep,
+}
+
+enum RematchStep {
+    Setup(Setup),
+    Armory(Armory),
 }
 
 /// A hosted match plus the per-frame bookkeeping around it.
@@ -123,11 +139,13 @@ impl HostGame {
         self.game.receive();
     }
 
-    fn frame(&mut self, controls: &mut Controls, glow: &view::Glow) {
+    /// Returns true when the host wants a new match (R, at any time). Only the
+    /// host can: it owns the match, so a joiner can only choose its own weapons.
+    fn frame(&mut self, controls: &mut Controls, glow: &view::Glow) -> bool {
         // On a touchscreen, a tap after the match is over stands in for R.
         let tapped = self.game.replica.world.winner.is_some() && touch::pressed();
         if is_key_pressed(KeyCode::R) || tapped {
-            self.game.restart(new_seed());
+            return true;
         }
 
         // Read the devices, run the match, then show it.
@@ -136,7 +154,9 @@ impl HostGame {
         self.advance(input);
         let banner = self.game.room_status().unwrap_or_default();
         let (up, down) = (self.game.bytes_up(), self.game.bytes_down());
-        self.presenter.show(&mut self.game.replica, up, down, &banner, true, glow);
+        let hint = hud::press_r("pick the next map and weapons");
+        self.presenter.show(&mut self.game.replica, up, down, &banner, &hint, glow);
+        false
     }
 }
 
@@ -191,7 +211,37 @@ async fn main() {
                     loadout = picked;
                 }
             }
-            Screen::Hosting(host_game) => host_game.frame(&mut controls, &glow),
+            Screen::Hosting(host_game) => {
+                if host_game.frame(&mut controls, &glow) {
+                    // Same order as from the menu: the match first, then what you carry.
+                    let choice = if host_game.game.has_room() { Choice::Host } else { Choice::Offline };
+                    let step = RematchStep::Setup(Setup::new(choice, settings));
+                    next = Some(Screen::Rematch(Rematch { game: Some(std::mem::replace(host_game, HostGame::menu())), step }));
+                }
+            }
+            Screen::Rematch(rematch) => {
+                if let Some(game) = &mut rematch.game {
+                    game.game.keep_room_alive();
+                }
+                match &mut rematch.step {
+                    RematchStep::Setup(setup) => {
+                        if let Some((choice, chosen)) = setup.frame(&glow) {
+                            settings = chosen;
+                            rematch.step = RematchStep::Armory(Armory::new(choice, loadout.clone()));
+                        }
+                    }
+                    RematchStep::Armory(armory) => {
+                        if let Some((_, picked)) = armory.frame(&glow) {
+                            if let Some(mut game) = rematch.game.take() {
+                                game.game.restart(new_seed(), &picked, 1 + settings.bots, settings.rules);
+                                game.bucket = 0.0;
+                                next = Some(Screen::Hosting(game));
+                            }
+                            loadout = picked;
+                        }
+                    }
+                }
+            }
             Screen::Joined(join_game) => join_game.frame(&mut controls, &glow),
         }
         if let Some(next) = next {
@@ -204,7 +254,7 @@ async fn main() {
             // Stick hints only where the sticks do something.
             let playing = match &screen {
                 Screen::Menu(menu) => menu.walkable(),
-                Screen::Setup(_) | Screen::Armory(_) => false,
+                Screen::Setup(_) | Screen::Armory(_) | Screen::Rematch(_) => false,
                 Screen::Hosting(_) | Screen::Joined(_) => true,
             };
             controls.touch.draw(playing);

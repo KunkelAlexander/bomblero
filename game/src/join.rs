@@ -27,8 +27,10 @@ use protocol::replica::Replica;
 use protocol::{decode_host, encode_client, ClientMsg, FromRelay, HostMsg, Reject, Rules, ToRelay};
 use sim::{Input, DT};
 
+use crate::armory::Armory;
 use crate::controls::Controls;
 use crate::draw::center_text;
+use crate::menu::Choice;
 use crate::net::{RelayLink, RELAY_URL};
 use crate::present::Presenter;
 use crate::socket::SocketState;
@@ -56,6 +58,14 @@ pub struct JoinGame {
     create: Option<Rules>,
     /// The weapons we picked, sent to the host with every `Welcome`.
     loadout: Vec<u8>,
+    /// The weapon picker, open while we choose for the next match. Only the
+    /// host picks the map (it owns the match); everybody picks their own weapons.
+    armory: Option<Armory>,
+    /// A new match's `Welcome` came while the picker was open: the match is
+    /// running, and the choice goes to the host the moment it is made.
+    loadout_due: bool,
+    /// Picked for the next match already, and now waiting for it to start.
+    chosen: bool,
     /// Have we asked the relay to let us in yet? (Only possible once it is open.)
     asked: bool,
     /// The relay put us in the room; now we wait for the host's Welcome.
@@ -83,6 +93,9 @@ impl JoinGame {
             code,
             create: None,
             loadout: loadout.to_vec(),
+            armory: None,
+            loadout_due: false,
+            chosen: false,
             asked: false,
             in_room: false,
             replica: None,
@@ -106,6 +119,23 @@ impl JoinGame {
     pub fn frame(&mut self, controls: &mut Controls, glow: &Glow) {
         let now = get_time();
         self.pump(now);
+
+        if let Some(armory) = &mut self.armory {
+            if self.problem.is_none() {
+                if let Some((_, picked)) = armory.frame(glow) {
+                    self.loadout = picked;
+                    self.armory = None;
+                    if self.loadout_due {
+                        self.loadout_due = false;
+                        self.send_loadout();
+                    } else {
+                        self.chosen = true;
+                    }
+                }
+                return;
+            }
+            self.armory = None;
+        }
 
         if self.problem.is_none() {
             if let Some(replica) = &mut self.replica {
@@ -137,13 +167,22 @@ impl JoinGame {
                     self.link.send(&ToRelay::Data { to: None, bytes });
                 }
 
+                // After the match: choose weapons for the next one. The host
+                // decides when that starts (or the server, after a pause), so
+                // all we can do is be ready, and tell it when we are.
+                let over = replica.world.winner.is_some();
+                if over && !self.chosen && (is_key_pressed(KeyCode::R) || crate::touch::pressed()) {
+                    self.armory = Some(Armory::new(Choice::Join(self.code.clone()), self.loadout.clone()));
+                }
+                let end_hint = if self.chosen { "waiting for the next match".to_string() } else { crate::hud::press_r("pick your weapons for the next match") };
+
                 let smooth = if self.interpolate { "smoothing on" } else { "smoothing off" };
                 let predicted = if self.predict { "prediction on" } else { "prediction off" };
                 let banner = match self.rtt_ms {
                     Some(ms) => format!("room {}  -  ping {ms:.0} ms  -  {smooth} (I)  -  {predicted} (P)", self.code),
                     None => format!("room {}  -  {smooth} (I)  -  {predicted} (P)", self.code),
                 };
-                self.presenter.show(replica, self.bytes_up, self.bytes_down, &banner, false, glow);
+                self.presenter.show(replica, self.bytes_up, self.bytes_down, &banner, &end_hint, glow);
                 return;
             }
         }
@@ -215,10 +254,14 @@ impl JoinGame {
                         replica.set_prediction(self.predict);
                         self.replica = Some(replica);
                         // Now that we have a slot, tell the host what we carry.
-                        // (A rematch is a new match, so it is sent again.)
-                        let bytes = encode_client(&ClientMsg::Loadout(self.loadout.clone()));
-                        self.bytes_up += bytes.len() as u64;
-                        self.link.send(&ToRelay::Data { to: None, bytes });
+                        // (A rematch is a new match, so it is sent again, unless
+                        // we are still choosing: then the choice follows.)
+                        self.chosen = false;
+                        if self.armory.is_some() {
+                            self.loadout_due = true;
+                        } else {
+                            self.send_loadout();
+                        }
                     }
                     // Snapshots that arrive before the Welcome are useless
                     // (there is nothing to apply them to) and are dropped.
@@ -232,6 +275,12 @@ impl JoinGame {
             }
             FromRelay::PeerJoined(_) | FromRelay::PeerLeft(_) | FromRelay::Pong { .. } => {}
         }
+    }
+
+    fn send_loadout(&mut self) {
+        let bytes = encode_client(&ClientMsg::Loadout(self.loadout.clone()));
+        self.bytes_up += bytes.len() as u64;
+        self.link.send(&ToRelay::Data { to: None, bytes });
     }
 
     fn draw_status(&self) {

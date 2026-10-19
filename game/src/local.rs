@@ -33,22 +33,14 @@ pub struct LocalGame {
     share: Option<Share>,
     /// The client's copy of the world. This is what gets drawn.
     pub replica: Replica,
-    /// The weapons this player picked. A rematch is a brand-new `Host`, which
-    /// has to be told again, exactly like a friend who rejoins.
-    loadout: Vec<u8>,
-    /// Seats and rules, kept for the rematch too.
-    slots: usize,
-    rules: Rules,
 }
 
 impl LocalGame {
     pub fn new(seed: u32, loadout: &[u8], slots: usize, rules: Rules) -> LocalGame {
         let mut game = LocalGame::with_host(Host::new(slots, rules, seed));
-        (game.slots, game.rules) = (slots, rules);
         // Even the local player's choice goes through the wire as a message,
         // like a friend's: one code path, and the host checks it either way.
-        game.loadout = loadout.to_vec();
-        game.link.client_send(&ClientMsg::Loadout(game.loadout.clone()));
+        game.link.client_send(&ClientMsg::Loadout(loadout.to_vec()));
         game
     }
 
@@ -74,7 +66,7 @@ impl LocalGame {
             _ => unreachable!("the loopback delivers the Welcome we just sent"),
         };
 
-        LocalGame { host, link, peer, share: None, replica, loadout: Vec::new(), slots: 1, rules: Rules::default() }
+        LocalGame { host, link, peer, share: None, replica }
     }
 
     /// Let friends in: open a room on the relay. Idempotent.
@@ -84,15 +76,28 @@ impl LocalGame {
         }
     }
 
-    /// Rematch. Friends stay in the room and get a fresh `Welcome`.
-    pub fn restart(&mut self, seed: u32) {
+    /// Rematch, with whatever map, seats and weapons were just chosen. Friends
+    /// stay in the room and get a fresh `Welcome`.
+    pub fn restart(&mut self, seed: u32, loadout: &[u8], slots: usize, rules: Rules) {
         let share = self.share.take();
-        let loadout = std::mem::take(&mut self.loadout);
-        *self = LocalGame::new(seed, &loadout, self.slots, self.rules);
+        *self = LocalGame::new(seed, loadout, slots, rules);
         if let Some(mut share) = share {
             share.welcome_again(&mut self.host);
             self.share = Some(share);
         }
+    }
+
+    /// While the host picks the next match, nothing ticks, but the room must
+    /// not go quiet: keep listening to the relay (and pinging it), or an idle
+    /// socket gets cut and friends who arrive meanwhile are never welcomed.
+    pub fn keep_room_alive(&mut self) {
+        if let Some(share) = &mut self.share {
+            share.receive(&mut self.host);
+        }
+    }
+
+    pub fn has_room(&self) -> bool {
+        self.share.is_some()
     }
 
     /// What to show about the room, if there is one.
