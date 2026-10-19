@@ -6,7 +6,7 @@
 # small keep-alive ping every 20 s, so it stays awake while someone is hosting.
 services:
   - type: web
-    name: neon-bomber-relay
+    name: neon-bomber-relay-sg
     runtime: docker
     plan: free
     # Without this Render picks Oregon, which is far from both Singapore and
