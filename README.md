@@ -213,8 +213,8 @@ open.
   player match is trivial for Rust, at about 12 KB/s per player.
 * The relay becomes a game server: it must decode messages, run the tick loop
   and own the player slots (the code in `game/src/share.rs` and `host/`).
-* The hosting player loses their zero-lag advantage, which is fairer but makes
-  client-side prediction worth considering.
+* The hosting player loses their zero-lag advantage, which is fairer; with
+  client-side prediction everybody's own movement is instant again.
 
 **How much work.** Less than it sounds, because `Host` already takes decoded
 messages and returns snapshots without touching a socket. The work is moving
@@ -233,8 +233,9 @@ the host's lag bothers you, do the move then.
 ## Known limits
 
 * The host's browser tab must stay visible, or the match freezes for everyone.
-* Joiners see everything about 100 ms late (interpolation), including their own
-  player. There is no client-side prediction yet.
+* Joiners see other players about 100 ms late (interpolation). Their own
+  movement is predicted, so it feels instant, but their shots start from where
+  the host has them, and nothing is rewound for hit detection.
 * The native build can only use a relay on `ws://` (no TLS), so a deployed relay
   works with the browser build only.
 * The free relay sleeps when idle, and rooms disappear if it restarts.

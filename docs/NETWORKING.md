@@ -147,9 +147,35 @@ round trip to the *host* (a token the host sends straight back), so it includes
 the host's frame time.
 
 The host has an unfair advantage: its own player has no network delay at all.
-There is no client-side prediction yet. If joining feels laggy, the usual cure
-is to move your *own* player locally and correct it when the host disagrees;
-we measure first and add it only if needed.
+That is what client-side prediction fixes, for your own movement (next section).
+
+### Client-side prediction: your own player in the present
+Interpolation makes motion smooth but not quick: you press D and wait a round
+trip, plus 100 ms of playback delay, to see yourself move. At a 300 ms ping
+that is half a second, and it feels like steering through mud. Prediction
+cheats for one thing, your own movement:
+
+1. Each input carries a sequence number. The client sends it *and* applies it
+   to its own body at once, with the host's own movement code
+   (`World::predict_body`, shared with `World::step` so they cannot drift), and
+   keeps it in a list of inputs the host has not yet confirmed.
+2. Every snapshot carries `acks`: per player, the last input number the host
+   had applied. It also holds your body as the host has it, that many inputs ago.
+3. The client drops the confirmed inputs and *replays* the rest on top of the
+   host's body (`Replica::reconcile`). If nothing unexpected happened, the
+   result is exactly what it already showed, and the correction is invisible.
+   If something did (an explosion threw you, a wall was built in your way) the
+   error is not snapped but eased out over about 100 ms (`Prediction::offset`),
+   unless it is a teleport or respawn, which does snap.
+
+The test `prediction_hides_the_round_trip` in `host/src/lib.rs` runs this over a
+simulated 400 ms ping: without prediction the player is drawn up to 83 px
+behind where an ideal zero-lag machine would have them, with it 0.00 px.
+
+What is *not* predicted: shooting, damage and everyone else. Those depend on
+things the client cannot know (other players' inputs, the host's random
+numbers). Press **P** in a joined game to switch prediction off and feel the
+difference; **I** does the same for interpolation.
 
 ### Reliable and ordered: WebSocket
 A browser may only open a WebSocket to a server (not raw UDP). A WebSocket is
@@ -196,8 +222,10 @@ A match costs about 0.1 % of a core.
   visible. A dedicated server would remove this.
 * **The host's connection is everyone's connection.** If the host's wifi
   stutters, the whole match stutters.
-* **No prediction, no rewind.** Firing at a moving target on a joiner is
-  judged by the host's world, 100 ms or more after what the joiner saw.
+* **Only movement is predicted, and nothing is rewound.** Your shots start
+  from where the host has you (a round trip behind what you see), and firing at
+  a moving target on a joiner is judged by the host's world, 100 ms or more
+  after what the joiner saw. Other players are always drawn in the past.
 * **Rooms live in the relay's memory.** If the relay restarts, rooms are gone.
   Run exactly one relay instance.
 * **No rate limiting or accounts.** Fine for friends; not for the open internet.
