@@ -15,12 +15,34 @@
 //
 // Pattern: Double Buffer. The world on screen (`world`) is never half-updated:
 // it is rewritten as a whole from the two snapshots in `queue` once per frame.
+//
+// Networking concept: client-side prediction. Everything above makes the
+// picture smooth, but it is still the host's picture, so your own player moves
+// only after your key press has gone to the host and the answer has come back
+// (a full round trip) and then waited out the interpolation delay. Prediction
+// cheats for ONE thing, your own movement: the client runs the same movement
+// code as the host (`World::predict_body`) the moment you press a key, and
+// shows that. The host stays the authority; its snapshots keep correcting us:
+//
+//   1. every input you send is also applied to your own body at once, and kept
+//      in `pending` with its sequence number;
+//   2. a snapshot arrives. It says "I have applied your inputs up to #N" (its
+//      `acks`) and gives your body as the host has it, N inputs ago;
+//   3. we drop the pending inputs up to #N and REPLAY the rest on top of the
+//      host's body. That is where the host will have you by the time it has
+//      read them. Normally it equals what we already show, so nothing happens.
+//      When it does not (you were blown up, bumped into a wall we did not know
+//      about) the picture is nudged, not jerked: see `Prediction::offset`.
+//
+// This is also called reconciliation. The other players are not predicted
+// (their inputs are not ours to know), so they still move on the interpolated,
+// delayed timeline: you see yourself in the present and the others in the past.
 
 use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 
 use sim::tilemap::MAPS;
-use sim::{Event, Tilemap, World, DT, TILE};
+use sim::{Event, Input, Player, Tilemap, Vec2, World, DT, TILE};
 
 use crate::{HostMsg, PlayerId, Snapshot, Welcome};
 
@@ -33,6 +55,26 @@ const MAX_ERROR: f32 = 30.0;
 /// A player that moved further than this between two snapshots teleported
 /// (respawn); sliding them across the map would look wrong.
 const TELEPORT: f32 = TILE * 3.0;
+/// How fast a prediction error melts away, per second. 10 means about 100 ms
+/// to forget most of it: slow enough not to be seen as a jerk, fast enough
+/// that a wrong picture does not hang around.
+const EASE_RATE: f32 = 10.0;
+/// Inputs kept for replay. 120 is two seconds; beyond that the host has long
+/// stopped answering and replaying more would only prolong a wrong picture.
+const MAX_PENDING: usize = 120;
+
+/// The client's guess about its own player (see the note at the top).
+struct Prediction {
+    /// Inputs the host has not acknowledged yet, oldest first.
+    pending: VecDeque<Input>,
+    /// My body as predicted: the host's last word plus every pending input.
+    /// Kept apart from `World::players`, which `present` rewrites each frame.
+    body: Player,
+    /// How far the picture is still off from `body`, being eased to nothing.
+    /// When a correction arrives, `body` jumps but the picture must not:
+    /// the error goes in here and `advance` bleeds it out over ~100 ms.
+    offset: Vec2,
+}
 
 pub struct Replica {
     /// What to draw.
@@ -53,6 +95,8 @@ pub struct Replica {
     /// Seconds since the newest snapshot arrived. Snapshots come in steps, but
     /// time does not, so this makes the target move smoothly too.
     since_newest: f32,
+    /// `Some` while this client predicts its own player.
+    prediction: Option<Prediction>,
 }
 
 impl Replica {
@@ -74,6 +118,7 @@ impl Replica {
             queue: VecDeque::from([welcome.snapshot]),
             playhead,
             since_newest: 0.0,
+            prediction: None,
         };
         replica.present();
         replica
@@ -82,10 +127,18 @@ impl Replica {
     /// Feed in one message from the host.
     pub fn apply(&mut self, msg: HostMsg) {
         match msg {
-            // A second Welcome means the host restarted the match.
-            HostMsg::Welcome(w) => *self = Replica::new(w, self.delay),
+            // A second Welcome means the host restarted the match: a fresh
+            // replica, with nothing pending (those inputs were for the old one).
+            HostMsg::Welcome(w) => {
+                let predicting = self.predicting();
+                *self = Replica::new(w, self.delay);
+                self.set_prediction(predicting);
+            }
             // Only queued: nothing is drawn from it until `advance` gets there.
+            // The prediction, though, hears of it at once: its job is to be
+            // ahead of the playhead, so it uses the newest news there is.
             HostMsg::Snapshot(s) => {
+                self.reconcile(&s);
                 self.queue.push_back(s);
                 self.since_newest = 0.0;
             }
@@ -100,6 +153,71 @@ impl Replica {
 
     pub fn set_delay(&mut self, delay: u32) {
         self.delay = delay;
+    }
+
+    pub fn predicting(&self) -> bool {
+        self.prediction.is_some()
+    }
+
+    /// Turn prediction on or off. The local player of a hosted match leaves it
+    /// off: its "network" is a function call, so there is nothing to hide.
+    pub fn set_prediction(&mut self, on: bool) {
+        // Start from the newest host state (the queue is never empty).
+        let host_body = self.queue.back().map(|s| s.players[self.me as usize].clone());
+        self.prediction = host_body.filter(|_| on).map(|body| Prediction { pending: VecDeque::new(), body, offset: Vec2::ZERO });
+    }
+
+    /// The player just sent `input` to the host: apply it to our own body now
+    /// instead of waiting for the host's answer. Call once per input sent, in
+    /// order, with the same `seq` the host will acknowledge.
+    pub fn predict(&mut self, input: Input) {
+        let me = self.me as usize;
+        let Some(pred) = &mut self.prediction else { return };
+        step_mine(&mut self.world, me, &mut pred.body, &input);
+        pred.pending.push_back(input);
+        if pred.pending.len() > MAX_PENDING {
+            pred.pending.pop_front();
+        }
+    }
+
+    /// A snapshot arrived: rebuild the prediction on top of the host's news
+    /// (steps 2 and 3 in the note at the top).
+    fn reconcile(&mut self, snapshot: &Snapshot) {
+        let me = self.me as usize;
+        let Some(pred) = &mut self.prediction else { return };
+        let Some(host_body) = snapshot.players.get(me) else { return };
+
+        let ack = snapshot.acks.get(me).copied().unwrap_or(0);
+        pred.pending.retain(|input| input.seq > ack);
+        let mut corrected = host_body.clone();
+        for input in &pred.pending {
+            step_mine(&mut self.world, me, &mut corrected, input);
+        }
+
+        // `corrected` and `pred.body` describe the same moment (the end of the
+        // pending inputs), so their difference is purely how wrong we were.
+        // The picture keeps what it showed; the error is paid off by `advance`.
+        pred.offset += pred.body.pos - corrected.pos;
+        if pred.offset.length() > TELEPORT {
+            // Respawned or teleported: easing across the map would look wrong.
+            pred.offset = Vec2::ZERO;
+        }
+        pred.body = corrected;
+    }
+
+    /// Draw my own player from the prediction instead of the delayed playhead.
+    fn show_prediction(&mut self) {
+        let Some(pred) = &self.prediction else { return };
+        let mine = &mut self.world.players[self.me as usize];
+        // Dead, or the host says so already: the host's picture is the right one.
+        if !mine.alive || !pred.body.alive {
+            return;
+        }
+        // Only the movement is predicted; health, ammo and score stay as the
+        // playhead has them, so they change together with their events.
+        mine.pos = pred.body.pos + pred.offset;
+        mine.vel = pred.body.vel;
+        mine.aim = pred.body.aim;
     }
 
     /// Move the playhead forward by `seconds` of real time and update `world`.
@@ -129,6 +247,11 @@ impl Replica {
         // Never show a future we have no data for.
         self.playhead = self.playhead.min(newest);
         self.present();
+
+        if let Some(pred) = &mut self.prediction {
+            pred.offset *= (-EASE_RATE * seconds).exp();
+        }
+        self.show_prediction();
     }
 
     /// Fill `world` with the match as it looks at the playhead.
@@ -186,6 +309,15 @@ impl Replica {
     }
 }
 
+/// Move one body by one input, using the replica's world for the walls and
+/// puddles around it. The body is swapped into its slot in `world` because the
+/// sim's movement code works on `world.players[me]`; swapping avoids copying it.
+fn step_mine(world: &mut World, me: usize, body: &mut Player, input: &Input) {
+    std::mem::swap(&mut world.players[me], body);
+    world.predict_body(me, input);
+    std::mem::swap(&mut world.players[me], body);
+}
+
 /// Blend two angles the short way round (359° to 1° is a 2° turn, not 358°).
 fn lerp_angle(from: f32, to: f32, t: f32) -> f32 {
     let diff = (to - from + PI).rem_euclid(TAU) - PI;
@@ -205,7 +337,7 @@ mod tests {
     fn snapshot(tick: u32, events: Vec<Event>) -> Snapshot {
         let mut players = world().players;
         players[0].pos = vec2(tick as f32 * 10.0, 100.0);
-        Snapshot { tick, players, projectiles: Vec::new(), deployables: Vec::new(), winner: None, events }
+        Snapshot { tick, players, projectiles: Vec::new(), deployables: Vec::new(), winner: None, acks: Vec::new(), events }
     }
 
     fn replica(delay: u32) -> Replica {
@@ -272,6 +404,40 @@ mod tests {
         }
         r.advance(DT);
         assert!(r.playhead > 590.0 - 6.0, "playhead jumped to {}", r.playhead);
+    }
+
+    #[test]
+    fn a_correction_is_eased_in_not_jerked() {
+        let mut r = replica(0);
+        r.set_prediction(true);
+        r.advance(0.0);
+        let before = r.world.players[0].pos;
+
+        // The host says we are 20 px from where we think we are.
+        arrive(&mut r, 2, Vec::new());
+        r.advance(0.0);
+        assert_eq!(r.world.players[0].pos, before, "the picture must not jump");
+
+        r.advance(1.0);
+        assert!((r.world.players[0].pos.x - 20.0).abs() < 0.1, "a second later we show the host's version");
+    }
+
+    #[test]
+    fn a_teleport_is_not_eased() {
+        let mut r = replica(0);
+        r.set_prediction(true);
+        arrive(&mut r, 40, Vec::new()); // 400 px away: a respawn, not a wobble
+        r.advance(0.0);
+        assert_eq!(r.world.players[0].pos.x, 400.0);
+    }
+
+    #[test]
+    fn without_prediction_the_picture_is_the_hosts() {
+        let mut r = replica(0);
+        arrive(&mut r, 2, Vec::new());
+        r.advance(0.0);
+        assert!(!r.predicting());
+        assert_eq!(r.world.players[0].pos.x, 20.0);
     }
 
     #[test]

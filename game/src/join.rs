@@ -9,19 +9,23 @@
 //
 // Networking concept: latency. Between pressing a key and seeing your player
 // move, the news travels to the host, the host simulates it, and the snapshot
-// travels back: at least one round trip, plus up to one snapshot interval.
-// There is no client-side prediction (yet), so you feel all of it. The ping in
-// the corner is that round trip, measured with a token the host echoes back.
+// travels back: at least one round trip, plus up to one snapshot interval. The
+// ping in the corner is that round trip, measured with a token the host echoes
+// back.
 //
-// On top of that the replica plays snapshots back `INTERP_DELAY` ticks late so
-// motion is smooth (see `protocol::replica`). Press I to switch that off and see
-// the raw 30 Hz steps; the cost of smoothness is that everything, including your
-// own player, is drawn ~100 ms in the past.
+// Two tricks work on it (both in `protocol::replica`):
+//   * Interpolation plays snapshots back `INTERP_DELAY` ticks late so motion is
+//     smooth. Press I to switch it off and see the raw 30 Hz steps; the cost of
+//     smoothness is that everything is drawn ~100 ms in the past.
+//   * Client-side prediction moves your own player at once, with the host's
+//     movement code, and corrects it when the host's answer arrives. Press P to
+//     switch it off and feel the full round trip on your own player: at a 300 ms
+//     ping the difference is hard to miss.
 
 use macroquad::prelude::*;
 use protocol::replica::Replica;
 use protocol::{decode_host, encode_client, ClientMsg, FromRelay, HostMsg, Reject, Rules, ToRelay};
-use sim::DT;
+use sim::{Input, DT};
 
 use crate::controls::Controls;
 use crate::draw::center_text;
@@ -39,6 +43,11 @@ pub struct JoinGame {
     link: RelayLink,
     /// Interpolation on? (Toggled with I, to make the effect visible.)
     interpolate: bool,
+    /// Prediction on? (Toggled with P, for the same reason.)
+    predict: bool,
+    /// Sequence number of the last input sent. The host acknowledges it in its
+    /// snapshots, which is how the replica knows what to replay.
+    seq: u32,
     /// The room to join; for a room we create on the server, filled in when
     /// the server answers with the code to share.
     code: String,
@@ -69,6 +78,8 @@ impl JoinGame {
         JoinGame {
             link: RelayLink::connect(RELAY_URL),
             interpolate: true,
+            predict: true,
+            seq: 0,
             code,
             create: None,
             loadout: loadout.to_vec(),
@@ -103,23 +114,34 @@ impl JoinGame {
                     replica.set_delay(delay_for(self.interpolate));
                 }
 
+                if is_key_pressed(KeyCode::P) {
+                    self.predict = !self.predict;
+                    replica.set_prediction(self.predict);
+                }
+
                 // Read the devices every frame (key *presses* are one-frame
-                // events), but send at most once per sim tick. The host keeps
-                // only the newest input per tick anyway, so on a 144 Hz
-                // monitor the extra messages would just waste bandwidth.
+                // events), but send exactly one input per sim tick, however
+                // fast or slow the frames come: prediction counts inputs as
+                // ticks, so a slow phone owes the host one per 1/60 s too (two
+                // in a 30 fps frame). The cap stops a long stall (a hidden tab)
+                // from sending a burst.
                 let input = controls.read(&replica.world, replica.me as usize);
-                self.send_clock += get_frame_time();
-                if self.send_clock >= DT {
-                    self.send_clock %= DT;
+                self.send_clock = (self.send_clock + get_frame_time()).min(0.1);
+                while self.send_clock >= DT {
+                    self.send_clock -= DT;
+                    self.seq += 1;
+                    let input = Input { seq: self.seq, ..input };
+                    replica.predict(input);
                     let bytes = encode_client(&ClientMsg::Input(input));
                     self.bytes_up += bytes.len() as u64;
                     self.link.send(&ToRelay::Data { to: None, bytes });
                 }
 
                 let smooth = if self.interpolate { "smoothing on" } else { "smoothing off" };
+                let predicted = if self.predict { "prediction on" } else { "prediction off" };
                 let banner = match self.rtt_ms {
-                    Some(ms) => format!("room {}  -  ping {ms:.0} ms  -  {smooth} (I)", self.code),
-                    None => format!("room {}  -  {smooth} (I)", self.code),
+                    Some(ms) => format!("room {}  -  ping {ms:.0} ms  -  {smooth} (I)  -  {predicted} (P)", self.code),
+                    None => format!("room {}  -  {smooth} (I)  -  {predicted} (P)", self.code),
                 };
                 self.presenter.show(replica, self.bytes_up, self.bytes_down, &banner, false, glow);
                 return;
@@ -189,7 +211,9 @@ impl JoinGame {
                     // The first Welcome starts our match; a later one means
                     // the host started a rematch.
                     Some(HostMsg::Welcome(welcome)) => {
-                        self.replica = Some(Replica::new(welcome, delay_for(self.interpolate)));
+                        let mut replica = Replica::new(welcome, delay_for(self.interpolate));
+                        replica.set_prediction(self.predict);
+                        self.replica = Some(replica);
                         // Now that we have a slot, tell the host what we carry.
                         // (A rematch is a new match, so it is sent again.)
                         let bytes = encode_client(&ClientMsg::Loadout(self.loadout.clone()));

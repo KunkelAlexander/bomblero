@@ -201,6 +201,16 @@ pub enum Event {
     Reflected { pos: Vec2 },
 }
 
+/// What `step_body` tells `step_player` about the move, for the parts that are
+/// not movement: the dash event and the damage for hitting a wall on oil.
+struct Moved {
+    /// Who laid the puddle the body started in, if it was in one.
+    slick: Option<usize>,
+    /// The speed of the hardest wall hit, in px/s.
+    slam: f32,
+    dashed: bool,
+}
+
 pub struct World {
     pub map: Tilemap,
     pub players: Vec<Player>,
@@ -298,18 +308,19 @@ impl World {
             return;
         }
 
-        let slick = self.slick_owner(self.players[i].pos);
-        let on_slick = slick.is_some();
-        let pull = self.well_pull(self.players[i].pos);
-        let p = &mut self.players[i];
-        p.invuln = (p.invuln - DT).max(0.0);
-        p.sheep = (p.sheep - DT).max(0.0);
-        p.confused = (p.confused - DT).max(0.0);
-        p.stunned = (p.stunned - DT).max(0.0);
-        if input.aim.is_finite() {
-            p.aim = input.aim;
+        let moved = self.step_body(i, input);
+        if moved.dashed {
+            let p = &self.players[i];
+            let (pos, vel) = (p.pos, p.vel);
+            self.events.push(Event::Dashed { player: i as u8, pos, dir: vel.normalize_or_zero() });
+        }
+        if let Some(owner) = moved.slick {
+            if moved.slam > SLAM_SPEED {
+                self.damage_player(i, ((moved.slam - SLAM_SPEED) * SLAM_DAMAGE).min(SLAM_MAX), owner, Vec2::ZERO);
+            }
         }
 
+        let p = &mut self.players[i];
         for w in &mut p.weapons {
             w.cooldown = (w.cooldown - DT).max(0.0);
             if w.reload > 0.0 {
@@ -322,6 +333,42 @@ impl World {
         }
         if (input.weapon as usize) < p.weapons.len() {
             p.current = input.weapon as usize;
+        }
+
+        if input.fire {
+            self.try_fire(i);
+        }
+    }
+
+    /// Client-side prediction: move ONE body exactly as the next `step` would,
+    /// and do nothing else. No shooting, no damage, no events, no other player
+    /// is touched, so a client can run it on its copy of the world and get the
+    /// same position the host will compute (see `protocol::replica`).
+    ///
+    /// Why movement only: walking depends on the body, the walls and the oil or
+    /// black holes around it, all of which the client knows. Shooting depends
+    /// on the other players and on luck (the host's random numbers), which the
+    /// client can only guess, so it waits for the host's word.
+    pub fn predict_body(&mut self, i: usize, input: &Input) {
+        if self.players[i].alive {
+            self.step_body(i, input);
+        }
+    }
+
+    /// The part of a tick that moves a living player: status timers, aim,
+    /// walking, dashing, wall collisions. Shared by `step_player` (the real
+    /// thing) and `predict_body`, so the two cannot drift apart.
+    fn step_body(&mut self, i: usize, input: &Input) -> Moved {
+        let slick = self.slick_owner(self.players[i].pos);
+        let on_slick = slick.is_some();
+        let pull = self.well_pull(self.players[i].pos);
+        let p = &mut self.players[i];
+        p.invuln = (p.invuln - DT).max(0.0);
+        p.sheep = (p.sheep - DT).max(0.0);
+        p.confused = (p.confused - DT).max(0.0);
+        p.stunned = (p.stunned - DT).max(0.0);
+        if input.aim.is_finite() {
+            p.aim = input.aim;
         }
 
         // Movement. Never trust the input: clamp the length so nobody can
@@ -378,19 +425,7 @@ impl World {
         } else {
             p.pos = ny;
         }
-        if dashed {
-            let (pos, vel) = (p.pos, p.vel);
-            self.events.push(Event::Dashed { player: i as u8, pos, dir: vel.normalize_or_zero() });
-        }
-        if let Some(owner) = slick {
-            if slam > SLAM_SPEED {
-                self.damage_player(i, ((slam - SLAM_SPEED) * SLAM_DAMAGE).min(SLAM_MAX), owner, Vec2::ZERO);
-            }
-        }
-
-        if input.fire {
-            self.try_fire(i);
-        }
+        Moved { slick, slam, dashed }
     }
 
     fn try_fire(&mut self, i: usize) {
@@ -1430,6 +1465,27 @@ mod tests {
                 assert_eq!(a.map.get(x, y), b.map.get(x, y));
             }
         }
+    }
+
+    #[test]
+    fn predicting_a_body_gives_what_the_real_step_gives() {
+        // The promise client-side prediction rests on. The script bumps into
+        // walls, stops and pushes again (dashes), so every branch of the
+        // movement runs.
+        let script = |t: u32| Input {
+            move_dir: if (t / 40) % 3 == 2 { Vec2::ZERO } else { vec2((t as f32 * 0.03).cos(), (t as f32 * 0.02).sin()) },
+            aim: t as f32 * 0.05,
+            ..Default::default()
+        };
+        let new = || World::new(Tilemap::from_ascii(MAP_GRID), 1, &[BLASTER], 42);
+        let (mut real, mut predicted) = (new(), new());
+        for t in 0..900 {
+            real.step(&[script(t)]);
+            predicted.predict_body(0, &script(t));
+            let (a, b) = (&real.players[0], &predicted.players[0]);
+            assert_eq!((a.pos, a.vel, a.aim, a.dash_cooldown), (b.pos, b.vel, b.aim, b.dash_cooldown), "tick {t}");
+        }
+        assert!(real.players[0].pos != real.map.spawns[0], "the script should have moved the player");
     }
 
     // ---- gadgets ----------------------------------------------------------------

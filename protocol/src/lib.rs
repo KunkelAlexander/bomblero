@@ -20,6 +20,9 @@
 //     him" or "I am at x=5"; it can only say "I am pressing fire".
 //   * Tick: the sim's step counter. It labels snapshots so a client knows which
 //     moment of the match it is looking at.
+//   * Client-side prediction: inputs carry a sequence number (`Input::seq`) and
+//     snapshots say which one the host has reached (`Snapshot::acks`), so a
+//     client can show its own player ahead of the host's news (see `replica`).
 
 pub mod relay;
 pub mod replica;
@@ -106,6 +109,12 @@ pub struct Snapshot {
     /// show for as long as it lasts, also for someone who joins while it is there.
     pub deployables: Vec<Deployable>,
     pub winner: Option<u8>,
+    /// Per player slot: the `seq` of the newest input the host had applied when
+    /// it took this snapshot (0 for bots). This is the acknowledgement that
+    /// client-side prediction needs: "your inputs up to #N are already inside
+    /// the position I am telling you; replay only the ones after it". Everyone
+    /// gets the whole list because a snapshot is broadcast, one copy for all.
+    pub acks: Vec<u32>,
     /// Events since the last snapshot. Clients turn them into explosions and
     /// sounds, and apply `TileChanged` to their copy of the map.
     pub events: Vec<Event>,

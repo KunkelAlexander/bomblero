@@ -47,7 +47,7 @@ mod tests {
     use super::*;
 
     fn snapshot(tick: u32, events: Vec<Event>) -> Snapshot {
-        Snapshot { tick, players: Vec::new(), projectiles: Vec::new(), deployables: Vec::new(), winner: None, events }
+        Snapshot { tick, players: Vec::new(), projectiles: Vec::new(), deployables: Vec::new(), winner: None, acks: Vec::new(), events }
     }
 
     #[test]

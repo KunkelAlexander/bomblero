@@ -156,12 +156,23 @@ impl Host {
     }
 
     fn snapshot(&self, events: Vec<Event>) -> Snapshot {
+        // The input a human's slot is driven by is the one `tick` just used, so
+        // its `seq` says how far the host has read that player's inputs.
+        let acks = self
+            .controllers
+            .iter()
+            .map(|c| match c {
+                Controller::Human(input) => input.seq,
+                Controller::Bot(_) => 0,
+            })
+            .collect();
         Snapshot {
             tick: self.world.tick,
             players: self.world.players.clone(),
             projectiles: self.world.projectiles.clone(),
             deployables: self.world.deployables.clone(),
             winner: self.world.winner,
+            acks,
             events,
         }
     }
@@ -176,7 +187,7 @@ mod tests {
     use super::*;
     use protocol::replica::Replica;
     use protocol::{decode_host, encode_client, decode_client, encode_host, HostMsg};
-    use sim::vec2;
+    use sim::{vec2, DT};
 
     /// Send a host message through the byte encoding, like a real wire would.
     fn over_the_wire(msg: &HostMsg) -> HostMsg {
@@ -214,6 +225,105 @@ mod tests {
             assert_eq!(a.hp, b.hp);
         }
         assert_eq!(replica.world.tick, host.world().tick);
+    }
+
+    /// A walk over a slow link, three ways: an ideal machine with no lag, a
+    /// client that predicts, and one that does not. Everything crosses `lag`
+    /// ticks of delay in each direction, so the ping is `2 * lag` ticks.
+    /// `jitter` makes every seventh input arrive late, to be corrected.
+    ///
+    /// Returns, per tick, how far (in px) the predicting client and the plain
+    /// client are from the ideal one, and at the end how far the predicting
+    /// client is from the real host.
+    fn walk_over_a_slow_link(lag: usize, jitter: usize) -> (Vec<f32>, Vec<f32>, f32) {
+        use std::collections::VecDeque;
+
+        // Alone in the match: no bot can shoot or push us, so the ideal path is
+        // exactly "the inputs, applied one per tick".
+        let mut host = Host::new(1, Rules::default(), 7);
+        let mut twin = Host::new(1, Rules::default(), 7);
+        let welcome = host.join().unwrap();
+        twin.join().unwrap();
+        let mut predicting = Replica::new(welcome.clone(), 0);
+        predicting.set_prediction(true);
+        let mut plain = Replica::new(welcome, 0);
+
+        // Stand still, walk right (the first push is a dash), stop, walk
+        // down-left, stop.
+        let script = |t: usize| match t {
+            30..=89 => vec2(1.0, 0.0),
+            120..=179 => vec2(-1.0, 1.0),
+            _ => vec2(0.0, 0.0),
+        };
+
+        // (tick it arrives at, message). Kept in arrival order, as a WebSocket does.
+        let mut to_host: VecDeque<(usize, Input)> = VecDeque::new();
+        let mut to_client: VecDeque<(usize, Snapshot)> = VecDeque::new();
+        let (mut errors, mut plain_errors) = (Vec::new(), Vec::new());
+
+        for t in 0..300 {
+            let input = Input { seq: t as u32 + 1, move_dir: script(t), ..Input::default() };
+            predicting.predict(input);
+            let late = if t % 7 == 0 { jitter } else { 0 };
+            let arrives = (t + lag + late).max(to_host.back().map_or(0, |m| m.0));
+            to_host.push_back((arrives, input));
+            twin.handle(0, ClientMsg::Input(input));
+            twin.tick();
+
+            while to_host.front().is_some_and(|m| m.0 <= t) {
+                host.handle(0, ClientMsg::Input(to_host.pop_front().unwrap().1));
+            }
+            to_client.push_back((t + lag, host.tick()));
+            while to_client.front().is_some_and(|m| m.0 <= t) {
+                let snapshot = over_the_wire(&HostMsg::Snapshot(to_client.pop_front().unwrap().1));
+                predicting.apply(snapshot.clone());
+                plain.apply(snapshot);
+            }
+            predicting.advance(DT);
+            plain.advance(DT);
+
+            let ideal = twin.world().players[0].pos;
+            errors.push(predicting.world.players[0].pos.distance(ideal));
+            plain_errors.push(plain.world.players[0].pos.distance(ideal));
+        }
+        let from_host = predicting.world.players[0].pos.distance(host.world().players[0].pos);
+        (errors, plain_errors, from_host)
+    }
+
+    #[test]
+    fn prediction_hides_the_round_trip() {
+        // 12 ticks each way: 400 ms ping, like Europe to Singapore and back
+        // with a bad day.
+        let (errors, plain_errors, _) = walk_over_a_slow_link(12, 0);
+        let worst = errors.iter().cloned().fold(0.0, f32::max);
+        let plain_worst = plain_errors.iter().cloned().fold(0.0, f32::max);
+        println!("worst distance from the ideal path: predicted {worst:.2} px, plain {plain_worst:.1} px");
+        assert!(worst < 0.01, "with a steady link the prediction is exact, was {worst} px off");
+        assert!(plain_worst > 60.0, "without it we draw the past, was only {plain_worst} px behind");
+    }
+
+    #[test]
+    fn a_late_packet_is_corrected_not_lost() {
+        let (errors, plain_errors, from_host) = walk_over_a_slow_link(12, 3);
+        let worst = errors.iter().cloned().fold(0.0, f32::max);
+        let plain_worst = plain_errors.iter().cloned().fold(0.0, f32::max);
+        println!("with jitter: predicted {worst:.2} px, plain {plain_worst:.1} px");
+        // A late input means the host moved us one tick behind what we guessed.
+        // That is a few pixels, eased away, and nothing like the plain client.
+        assert!(worst < 25.0, "a wobble of {worst} px is a visible jerk");
+        assert!(worst < plain_worst / 3.0);
+        // The host is the authority, not the ideal machine: a late input really
+        // does move the host's player differently. What matters is that, once
+        // everyone stands still, the client ends up exactly where the host says.
+        assert!(from_host < 0.01, "the client ended {from_host} px from the host");
+    }
+
+    #[test]
+    fn the_snapshot_says_how_many_inputs_the_host_has_read() {
+        let mut host = Host::new(2, Rules::default(), 1);
+        host.join(); // slot 0 is a human, slot 1 a bot
+        host.handle(0, ClientMsg::Input(Input { seq: 41, ..Input::default() }));
+        assert_eq!(host.tick().acks, [41, 0]);
     }
 
     #[test]
