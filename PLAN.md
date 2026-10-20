@@ -184,3 +184,14 @@ server/Dockerfile, render.yaml, fly.toml
 - **Reloading is a choice:** a weapon reloads only while it is the selected one, and not at all while you are dead. Before, you could empty the Nova and carry on with the blaster until it was back. Dying also no longer reloads a spent weapon (the rest still start full). The HUD shows a waiting reload as "paused".
 - **Loadout rules:** the arsenal has four kinds (Guns, Explosives, Tools, Tricks; `weapons::Class`) and a loadout holds at most two of each, checked by `weapons::can_add` in the armory, in `random_loadout` and in the host. The armory shows one column per kind and has a RANDOM button (R). Bots keep `BOT_LOADOUT` (three guns), which only they may.
 - **Crackler removed** (it overlapped the Cluster; its five table rows and the fork mechanic went with it). Seventeen weapons are left.
+
+## To do: crazy weapons (easiest first)
+Each is one `WeaponDef` row plus a small special, and a class slot (`weapons::Class`); each also needs a sound (`synth.rs`), a look (`draw.rs`) and a test in `sim`. Ranked by how much new machinery it needs, not by how fun it is.
+1. [ ] **Shockwave** (Tool): no damage, a huge ring of knockback that throws everyone into walls and oil. Easiest: an explosion with zero damage and big push; no new state.
+2. [ ] **Boomerang Bolt** (Explosive): a heavy bolt that flies out, turns round and comes back, hitting on both legs. One new projectile behaviour (a turn-around timer), no new kind of state.
+3. [ ] **Sticky Bomb** (Explosive): sticks to the player it hits and explodes after about a second, so the victim must run to a friend. New: a projectile that follows a player, which also has to travel in the snapshot. Pairs with chain reactions.
+4. [ ] **Chain Lightning** (Trick): arcs from the shooter to the nearest player, then on to the next within range, and to walls. New: target search plus a multi-segment beam to draw and send as an event.
+5. [ ] **Meteor Strike** (Explosive): mark a spot, and a second later a line of rockets rains on it. New: a delayed effect (a small timer queue in the world) that spawns several projectiles, plus a marker the players can see coming.
+6. [ ] **Time Bubble** (Trick): a zone where everything runs at about 30% speed for 4 s. Hardest: it slows players *and* projectiles, so `step_body` (shared with client prediction) needs the zone too, and the snapshot has to carry it, or joiners mispredict inside it.
+
+Also skipped from the review, still open: credit the last hit when you die to your own blast shortly after an enemy hit you; a charge-up telegraph for the Railgun. Tuning to check by playing: Nova (8 s) and Black Hole (9 s) reloads now that reloading only happens in hand.

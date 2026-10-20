@@ -161,7 +161,9 @@ impl Armory {
 
         // The crisp layer: everything that is read, on the finished picture.
         glow.ui();
-        if cards.roomy() {
+        // Both help lines need a width that fits four columns; squeezed into a
+        // narrow screen they would be too small to read.
+        if cards.roomy() && cards.by_class {
             center_wide("click a weapon or press its number (again to put it back). Two of each kind at most. The order you pick is the order of keys 1-5.", 124.0, 22.0, TEXT_DIM);
         }
         // The kind of each column, and how many of its two you have taken.
@@ -223,7 +225,7 @@ impl Armory {
         let missing = LOADOUT_SIZE - self.picked.len();
         let label = if ready { "GO".to_string() } else { format!("pick {missing} more") };
         let go = button(Rect::new(left + w_clear + w_random + 24.0, button_y, w_go, button_h), &label, ready, mine);
-        if cards.roomy() {
+        if cards.roomy() && cards.by_class {
             center_wide("Enter: go     R: random     Backspace: clear     Esc: back to the menu", height - 36.0, 20.0, TEXT_DIM);
         }
         (clear, random, go)

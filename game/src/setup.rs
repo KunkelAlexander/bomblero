@@ -105,7 +105,8 @@ impl Setup {
 
         // The crisp layer: map previews, text and buttons.
         glow.ui();
-        if spots.roomy {
+        // Squeezed to fit a narrow screen, the help line would be too small to read.
+        if spots.roomy && view::layout().size.x >= 700.0 {
             center_wide("click to choose     Left/Right: map     Enter: next     Esc: back to the menu", 124.0, 20.0, TEXT_DIM);
         }
         for (i, def) in MAPS.iter().enumerate() {
@@ -113,7 +114,9 @@ impl Setup {
             let preview = spots.preview(i);
             draw_preview(def, preview);
             let name = if i == chosen { TEXT } else { Color::new(0.7, 0.72, 0.78, 1.0) };
-            draw_text(def.name, r.x + 12.0, preview.bottom() + 28.0, 26.0, name);
+            // Four cards side by side on a narrow screen: shrink the name to fit.
+            let name_size = (26.0f32).min(26.0 * (r.w - 16.0) / measure_text(def.name, None, 26, 1.0).width);
+            draw_text(def.name, r.x + 8.0, preview.bottom() + 28.0, name_size, name);
             // The blurb only where it fits: a phone's cards keep just the name.
             if spots.roomy && measure_text(def.blurb, None, 18, 1.0).width < r.w - 24.0 {
                 draw_text(def.blurb, r.x + 12.0, preview.bottom() + 52.0, 18.0, TEXT_DIM);
@@ -191,6 +194,7 @@ struct Spots {
     bots_y: f32,
     /// Where the option buttons of both rows start (their labels go left of it).
     options_x: f32,
+    option_w: f32,
     cards_left: f32,
     cards_top: f32,
     card_w: f32,
@@ -208,8 +212,10 @@ impl Spots {
         let next_y = if roomy { size.y - 110.0 } else { size.y - 44.0 };
         let score_y = next_y - 16.0 - row_h;
         let bots_y = score_y - 10.0 - row_h;
-        // The wider row (four scores) and its label, centred.
-        let options_x = (size.x - (4.0 * OPTION_W + 3.0 * 10.0)) / 2.0 + 60.0;
+        // The wider row (four scores) and its label, centred. On a narrow
+        // screen the buttons shrink so the row (and the label to its left) fits.
+        let option_w = OPTION_W.min((size.x - 12.0 - 110.0 - 3.0 * 10.0) / 4.0);
+        let options_x = ((size.x - (4.0 * option_w + 3.0 * 10.0)) / 2.0 + 60.0).min(size.x - 12.0 - (4.0 * option_w + 3.0 * 10.0));
 
         let cards_top = if roomy { 150.0 } else { 60.0 };
         let text_h = if roomy { 60.0 } else { 36.0 };
@@ -224,7 +230,9 @@ impl Spots {
         // under them, so the options are not stranded at the bottom.
         let bots_y = bots_y.min(cards_top + 8.0 + preview_h + text_h + 48.0);
         let score_y = bots_y + row_h + 10.0;
-        Spots { roomy, row_h, next_y, score_y, bots_y, options_x, cards_left, cards_top, card_w, preview_h }
+        // Same for NEXT: it follows the rows instead of floating at the bottom.
+        let next_y = next_y.min(score_y + row_h + 40.0);
+        Spots { roomy, row_h, next_y, score_y, bots_y, options_x, option_w, cards_left, cards_top, card_w, preview_h }
     }
 
     fn card(&self, i: usize) -> Rect {
@@ -239,6 +247,6 @@ impl Spots {
     }
 
     fn option(&self, i: usize, y: f32) -> Rect {
-        Rect::new(self.options_x + i as f32 * (OPTION_W + 10.0), y, OPTION_W, self.row_h)
+        Rect::new(self.options_x + i as f32 * (self.option_w + 10.0), y, self.option_w, self.row_h)
     }
 }

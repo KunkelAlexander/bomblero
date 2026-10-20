@@ -55,6 +55,12 @@ pub fn draw(world: &World, me: usize, end_hint: &str, banner: &str, down: f32, u
     // left, so it goes to the top left of the arena on a dark plate.
     let net = format!("in {:.1} KB/s   out {:.1} KB/s   {:.1} ms", down / 1024.0, up / 1024.0, frame_ms);
     if l.hud_rows == 1 && width < WIDE {
+        // Offline there is nothing to report, and the plate would only hide a
+        // corner of a small arena (where a player may be spawning).
+        if banner.is_empty() {
+            draw_messages(world, me, end_hint, &l);
+            return;
+        }
         let w = measure_text(banner, None, 18, 1.0).width.max(measure_text(&net, None, 14, 1.0).width);
         draw_rectangle(0.0, 0.0, w + 24.0, 48.0, Color::new(0.03, 0.03, 0.04, 0.7));
         draw_text(banner, 12.0, 20.0, 18.0, TEXT);
