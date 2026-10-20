@@ -34,8 +34,9 @@ const TEXT_DIM: Color = Color::new(0.6, 0.62, 0.67, 1.0);
 const BAR_H: f32 = 44.0;
 
 /// `down`/`up` are bytes per second on the wire; `banner` is a line of status
-/// (room code, ping) from whoever is playing; `frame_ms` the time per frame.
-pub fn draw(world: &World, me: usize, end_hint: &str, banner: &str, down: f32, up: f32, frame_ms: f32) {
+/// (room code, ping) from whoever is playing; `frame_ms` the time per frame;
+/// `stats` whether to show the network cost line.
+pub fn draw(world: &World, me: usize, end_hint: &str, banner: &str, stats: bool, down: f32, up: f32, frame_ms: f32) {
     let l = view::layout();
     let (top, width) = (l.hud_top(), l.size.x);
     let bar_y = top + 8.0;
@@ -53,22 +54,27 @@ pub fn draw(world: &World, me: usize, end_hint: &str, banner: &str, down: f32, u
     // The status line, with the network cost under it in the quietest grey.
     // Normally at the right of the strip; a narrow one-row strip has no room
     // left, so it goes to the top left of the arena on a dark plate.
+    // Debug information, so it is only shown while `stats` is on (F3).
     let net = format!("in {:.1} KB/s   out {:.1} KB/s   {:.1} ms", down / 1024.0, up / 1024.0, frame_ms);
     if l.hud_rows == 1 && width < WIDE {
         // Offline there is nothing to report, and the plate would only hide a
         // corner of a small arena (where a player may be spawning).
-        if banner.is_empty() {
+        if banner.is_empty() && !stats {
             draw_messages(world, me, end_hint, &l);
             return;
         }
-        let w = measure_text(banner, None, 18, 1.0).width.max(measure_text(&net, None, 14, 1.0).width);
-        draw_rectangle(0.0, 0.0, w + 24.0, 48.0, Color::new(0.03, 0.03, 0.04, 0.7));
+        let w = measure_text(banner, None, 18, 1.0).width.max(if stats { measure_text(&net, None, 14, 1.0).width } else { 0.0 });
+        draw_rectangle(0.0, 0.0, w + 24.0, if stats { 48.0 } else { 28.0 }, Color::new(0.03, 0.03, 0.04, 0.7));
         draw_text(banner, 12.0, 20.0, 18.0, TEXT);
-        draw_text(&net, 12.0, 39.0, 14.0, TEXT_DIM);
+        if stats {
+            draw_text(&net, 12.0, 39.0, 14.0, TEXT_DIM);
+        }
     } else {
         let status_y = bar_y + (l.hud_rows - 1) as f32 * 50.0;
         right_text(banner, width - 16.0, status_y + 18.0, 18.0, TEXT);
-        right_text(&net, width - 16.0, status_y + 38.0, 14.0, TEXT_DIM);
+        if stats {
+            right_text(&net, width - 16.0, status_y + 38.0, 14.0, TEXT_DIM);
+        }
     }
 
     draw_messages(world, me, end_hint, &l);

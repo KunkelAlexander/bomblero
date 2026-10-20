@@ -55,9 +55,13 @@ const PADS: [Pad; 3] = [
 const TITLE_AT: Vec2 = vec2(640.0, 108.0);
 
 /// Phone-sized: a touchscreen with a picture under 600 px tall (a phone held
-/// sideways). Tablets and anything with a keyboard keep the playable menu.
+/// sideways). Tablets and anything with a keyboard keep the playable menu,
+/// unless the window is so narrow that the camera would crop the title and the
+/// outer pads (below ~960 px it no longer shows the whole hub): then the same
+/// still menu with buttons is the only one that works.
 fn compact() -> bool {
-    crate::touch::is_touch_device() && view::layout().size.y < 600.0
+    let size = view::layout().size;
+    (crate::touch::is_touch_device() && size.y < 600.0) || size.x < 960.0
 }
 
 const PAD_RADIUS: f32 = 40.0;
@@ -216,7 +220,7 @@ impl Menu {
         // Signs painted on the floor, under the player and their shots.
         draw_title();
         if compact {
-            center_text("tap a button below", 224.0, 26.0, TEXT_DIM);
+            center_text(if crate::touch::active() { "tap a button below" } else { "click a button below" }, 224.0, 26.0, TEXT_DIM);
             glow.present();
             glow.ui();
             return match &self.typing {

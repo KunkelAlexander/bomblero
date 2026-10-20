@@ -35,6 +35,8 @@ pub struct Presenter {
     pub pinned: Option<Vec2>,
     /// Smoothed time between frames, shown in the HUD so a slow GPU is visible.
     frame_ms: f32,
+    /// Whether the HUD shows the network cost and frame time (F3 toggles).
+    stats: bool,
     up_rate: RateMeter,
     down_rate: RateMeter,
 }
@@ -43,6 +45,9 @@ impl Presenter {
     /// Draw one frame. `up`/`down` are running byte totals, `banner` a line of
     /// status for the top left, `end_hint` what to tell this player when the match is over.
     pub fn show(&mut self, replica: &mut Replica, up: u64, down: u64, banner: &str, end_hint: &str, glow: &Glow) {
+        if is_key_pressed(KeyCode::F3) {
+            self.stats = !self.stats;
+        }
         self.up_rate.update(get_time(), up);
         self.down_rate.update(get_time(), down);
 
@@ -60,7 +65,7 @@ impl Presenter {
             let l = view::layout();
             draw_rectangle(0.0, 0.0, l.size.x, l.hud_top(), Color::new(1.0, 1.0, 1.0, (me.stunned * 0.9).min(1.0)));
         }
-        hud::draw(&replica.world, replica.me as usize, end_hint, banner, self.down_rate.per_second, self.up_rate.per_second, self.frame_ms);
+        hud::draw(&replica.world, replica.me as usize, end_hint, banner, self.stats, self.down_rate.per_second, self.up_rate.per_second, self.frame_ms);
     }
 
     /// Start the frame and draw the lit ground. `extra` are lights that do not
