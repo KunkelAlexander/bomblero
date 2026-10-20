@@ -36,7 +36,7 @@ const TOP_MARGIN: f32 = 8.0;
 /// glance next to your thumbs, so phones get bigger tiles and see less arena
 /// (the look-ahead below wins some of it back). Tune these two to taste.
 const MIN_TILE_PX_DESKTOP: f32 = 24.0;
-const MIN_TILE_PX_PHONE: f32 = 32.0;
+const MIN_TILE_PX_PHONE: f32 = 26.0;
 
 /// How far the camera leads towards where you aim, as a fraction of the visible
 /// arena. Zooming in costs awareness, and the direction you shoot in is where
