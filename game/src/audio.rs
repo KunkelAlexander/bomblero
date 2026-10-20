@@ -110,7 +110,7 @@ fn play(sfx: Sfx, loudness: f32) {
     AUDIO.with(|a| {
         let Some(audio) = &mut *a.borrow_mut() else { return };
         // Never restart the same sound within a few hundredths of a second:
-        // 20 laser pulses or 16 crackler sparks a second would stack up into
+        // 20 laser pulses a second would stack up into
         // a wall of noise (and the mixer has only so many voices).
         let now = get_time();
         if now - audio.last[sfx as usize] < min_gap(sfx) {
@@ -124,7 +124,7 @@ fn play(sfx: Sfx, loudness: f32) {
 fn min_gap(sfx: Sfx) -> f64 {
     match sfx {
         Sfx::Laser => 0.06,
-        Sfx::BoomSmall | Sfx::BrickBreak | Sfx::Crackler => 0.05,
+        Sfx::BoomSmall | Sfx::BrickBreak => 0.05,
         _ => 0.03,
     }
 }
@@ -154,7 +154,6 @@ fn shot_sound(weapon: u8) -> Option<Sfx> {
         w::MIRROR => Sfx::Mirror,
         w::OIL => Sfx::Oil,
         w::LASER => Sfx::Laser,
-        w::CRACKLER => Sfx::Crackler,
         w::BLACKHOLE => Sfx::BlackHole,
         w::FLASH => Sfx::Flash,
         _ => return None,

@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn bots_fight_on_every_map() {
         for def in &crate::tilemap::MAPS {
-            let mut world = World::new(Tilemap::from_ascii(def.art), 4, &crate::weapons::DEFAULT_LOADOUT, 5);
+            let mut world = World::new(Tilemap::from_ascii(def.art), 4, &crate::weapons::BOT_LOADOUT, 5);
             let mut bots: Vec<Bot> = (0..4).map(|i| Bot::new(100 + i)).collect();
             for _ in 0..60 * 90 {
                 let inputs: Vec<Input> = (0..4).map(|i| bots[i].think(&world, i)).collect();

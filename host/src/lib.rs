@@ -36,7 +36,7 @@ pub use throttle::Throttle;
 use protocol::{ClientMsg, PlayerId, Rules, Snapshot, Welcome};
 use sim::bots::Bot;
 use sim::tilemap::{Tilemap, MAPS};
-use sim::weapons::{valid_loadout, DEFAULT_LOADOUT};
+use sim::weapons::{valid_loadout, BOT_LOADOUT};
 use sim::{Event, Input, World};
 
 /// Who drives a player slot.
@@ -65,7 +65,7 @@ impl Host {
     /// A new match with `slots` players, all bots until humans join, played
     /// by the given rules.
     pub fn new(slots: usize, rules: Rules, seed: u32) -> Host {
-        let mut host = Host::on_map(MAPS[rules.map as usize].art, slots, seed, &DEFAULT_LOADOUT);
+        let mut host = Host::on_map(MAPS[rules.map as usize].art, slots, seed, &BOT_LOADOUT);
         host.world.score_limit = rules.score_limit;
         host.rules = rules;
         host
@@ -361,24 +361,24 @@ mod tests {
 
     #[test]
     fn a_player_gets_the_weapons_they_chose_once() {
-        use sim::weapons::{BOMB, NOVA, SWARM, TELEPORT, CLUSTER};
+        use sim::weapons::{BLASTER, BOMB, FLASH, NOVA, TELEPORT};
         let ids = |host: &Host, slot: usize| host.world().players[slot].weapons.iter().map(|w| w.id).collect::<Vec<_>>();
         let mut host = Host::new(3, Rules::default(), 1);
         host.join(); // slot 0
-        host.handle(0, ClientMsg::Loadout(vec![NOVA, BOMB, SWARM, TELEPORT, CLUSTER]));
-        assert_eq!(ids(&host, 0), [NOVA, BOMB, SWARM, TELEPORT, CLUSTER]);
+        host.handle(0, ClientMsg::Loadout(vec![NOVA, BOMB, TELEPORT, FLASH, BLASTER]));
+        assert_eq!(ids(&host, 0), [NOVA, BOMB, TELEPORT, FLASH, BLASTER]);
 
         // A second choice (a refill trick) and nonsense are both ignored.
-        host.handle(0, ClientMsg::Loadout(DEFAULT_LOADOUT.to_vec()));
-        assert_eq!(ids(&host, 0), [NOVA, BOMB, SWARM, TELEPORT, CLUSTER]);
+        host.handle(0, ClientMsg::Loadout(BOT_LOADOUT.to_vec()));
+        assert_eq!(ids(&host, 0), [NOVA, BOMB, TELEPORT, FLASH, BLASTER]);
         host.join(); // slot 1
         host.handle(1, ClientMsg::Loadout(vec![NOVA; 5]));
         host.handle(1, ClientMsg::Loadout(vec![0, 1, 2]));
-        assert_eq!(ids(&host, 1), DEFAULT_LOADOUT, "invalid choices change nothing");
+        assert_eq!(ids(&host, 1), BOT_LOADOUT, "invalid choices change nothing");
 
         // Slot 2 is a bot: messages claiming to come from it are not obeyed.
-        host.handle(2, ClientMsg::Loadout(vec![NOVA, BOMB, SWARM, TELEPORT, CLUSTER]));
-        assert_eq!(ids(&host, 2), DEFAULT_LOADOUT);
+        host.handle(2, ClientMsg::Loadout(vec![NOVA, BOMB, TELEPORT, FLASH, BLASTER]));
+        assert_eq!(ids(&host, 2), BOT_LOADOUT);
     }
 
     #[test]

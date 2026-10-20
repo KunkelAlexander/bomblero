@@ -80,7 +80,6 @@ pub enum Sfx {
     Mirror,
     Oil,
     Laser,
-    Crackler,
     BlackHole,
     Flash,
     BoomSmall,
@@ -98,7 +97,7 @@ pub enum Sfx {
     Victory,
 }
 
-pub const SFX_COUNT: usize = 29;
+pub const SFX_COUNT: usize = 28;
 
 // `id` and `name` are read by the tests (order check, file names for `dump`).
 #[allow(dead_code)]
@@ -177,11 +176,6 @@ pub static SOUNDS: [Sound; SFX_COUNT] = [
     },
     // The laser fires 20 times a second: short, quiet, and high, so the pulses blur into one buzz.
     Sound { id: Sfx::Laser, name: "laser", layers: &[layer(Square, 2200.0, 1200.0, 0.05, 1.0, 0.12)] },
-    Sound {
-        id: Sfx::Crackler,
-        name: "crackler",
-        layers: &[layer(Noise, 8000.0, 3000.0, 0.12, 4.0, 0.45), layer(Noise, 8000.0, 3000.0, 0.10, 4.0, 0.35).after(0.04)],
-    },
     Sound {
         id: Sfx::BlackHole,
         name: "blackhole",

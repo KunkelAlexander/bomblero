@@ -172,24 +172,6 @@ fn draw_projectiles(world: &World) {
                 draw_circle_lines(p.pos.x, p.pos.y, 5.5, 1.5, Color::new(0.1, 1.0, 0.95, 1.0));
                 draw_circle_lines(p.pos.x, p.pos.y, 3.5, 1.0, Color::new(1.0, 0.2, 0.8, 1.0));
             }
-            sim::weapons::CRACKLER
-            | sim::weapons::CRACKLE_1
-            | sim::weapons::CRACKLE_2
-            | sim::weapons::CRACKLE_3
-            | sim::weapons::CRACKLE_4 => {
-                // A yellow spark that tumbles; each generation is smaller than
-                // the one it split from.
-                let size = match p.weapon {
-                    sim::weapons::CRACKLER => 7.0,
-                    sim::weapons::CRACKLE_1 => 5.5,
-                    sim::weapons::CRACKLE_2 => 4.5,
-                    sim::weapons::CRACKLE_3 => 3.8,
-                    _ => 3.2,
-                };
-                let spin = world.tick as f32 * 9.0 + p.pos.x;
-                draw_poly(p.pos.x, p.pos.y, 4, size, spin, Color::new(1.0, 0.92, 0.3, 1.0));
-                draw_circle(p.pos.x, p.pos.y, size * 0.4, WHITE);
-            }
             sim::weapons::BOUNCER => {
                 // A spinning hollow diamond: it looks like something that bounces.
                 let spin = world.tick as f32 * 6.0;

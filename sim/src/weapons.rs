@@ -9,6 +9,8 @@
 // Pattern: Flyweight. A projectile in flight stores just a weapon id and its
 // own position/velocity. The shared, unchanging stats live once in `WEAPONS`.
 
+use crate::rng::Rng;
+
 pub const BLASTER: u8 = 0;
 pub const ROCKET: u8 = 1;
 pub const RAILGUN: u8 = 2;
@@ -29,37 +31,104 @@ pub const CONFUSER: u8 = 12;
 pub const MIRROR: u8 = 13;
 pub const OIL: u8 = 14;
 pub const LASER: u8 = 15;
-pub const CRACKLER: u8 = 16;
-pub const BLACKHOLE: u8 = 17;
-pub const FLASH: u8 = 18;
-/// What a Crackler shell splits into, generation by generation (see
-/// `Special::Fork`): 2, 4, 8, then the 16 sparks that explode. Not in the loadout.
-pub const CRACKLE_1: u8 = 19;
-pub const CRACKLE_2: u8 = 20;
-pub const CRACKLE_3: u8 = 21;
-pub const CRACKLE_4: u8 = 22;
+pub const BLACKHOLE: u8 = 16;
+pub const FLASH: u8 = 17;
 
-/// Every weapon a player can choose from, in the order the loadout screen lists
-/// them. (The menu's shooting range hands out all of them.)
-pub const ARSENAL: [u8; 18] = [
-    BLASTER, BUILD, ROCKET, BOUNCER, BOMB, RAILGUN, CLUSTER, SWARM, TELEPORT, NOVA, SHEEP, CONFUSER, MIRROR, OIL, LASER,
-    CRACKLER, BLACKHOLE, FLASH,
+/// What a weapon is for. A loadout may hold at most `MAX_PER_CLASS` of each, so
+/// five picks always mix at least three of the four: nobody can carry only guns,
+/// or only the strongest weapons of every kind.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Class {
+    /// Aimed damage from a distance.
+    Gun,
+    /// Area damage: they dig and they blast.
+    Explosive,
+    /// They change the map or your place on it.
+    Tool,
+    /// They do no damage: they change the fight.
+    Trick,
+}
+
+pub const CLASSES: [Class; 4] = [Class::Gun, Class::Explosive, Class::Tool, Class::Trick];
+
+impl Class {
+    pub fn name(self) -> &'static str {
+        match self {
+            Class::Gun => "GUNS",
+            Class::Explosive => "EXPLOSIVES",
+            Class::Tool => "TOOLS",
+            Class::Trick => "TRICKS",
+        }
+    }
+}
+
+/// Which class a weapon belongs to. (The weapons nobody can pick count as guns.)
+pub fn class_of(id: u8) -> Class {
+    match id {
+        ROCKET | BOMB | CLUSTER | NOVA => Class::Explosive,
+        BUILD | TELEPORT | MIRROR | OIL => Class::Tool,
+        SHEEP | CONFUSER | BLACKHOLE | FLASH => Class::Trick,
+        _ => Class::Gun,
+    }
+}
+
+pub const MAX_PER_CLASS: usize = 2;
+
+/// Every weapon a player can choose from, class by class (the loadout screen
+/// shows one column per class, in this order). The menu's shooting range hands
+/// out all of them.
+pub const ARSENAL: [u8; 17] = [
+    BLASTER, BOUNCER, RAILGUN, SWARM, LASER, //
+    ROCKET, BOMB, CLUSTER, NOVA, //
+    BUILD, TELEPORT, MIRROR, OIL, //
+    SHEEP, CONFUSER, BLACKHOLE, FLASH,
 ];
 
 /// How many weapons a player carries into a match, picked from the arsenal
 /// before it starts (like Liero's weapon menu). Keys 1-5 select them.
 pub const LOADOUT_SIZE: usize = 5;
 
-/// What bots carry, and what the picker starts with.
-pub const DEFAULT_LOADOUT: [u8; LOADOUT_SIZE] = [BLASTER, BOUNCER, ROCKET, BOMB, RAILGUN];
+/// What the picker starts with.
+pub const DEFAULT_LOADOUT: [u8; LOADOUT_SIZE] = [BLASTER, RAILGUN, ROCKET, BOMB, BUILD];
 
-/// Is this an acceptable choice: the right number of different arsenal weapons?
-/// A loadout arrives from another player's machine, and nothing that comes from
-/// outside is trusted, so the host checks it before it touches the world.
+/// What bots carry. It breaks the class rule (three guns) on purpose: the rule
+/// is there to make people's choices varied, and the bots only know how to
+/// shoot with these four (see `bots.rs`).
+pub const BOT_LOADOUT: [u8; LOADOUT_SIZE] = [BLASTER, BOUNCER, ROCKET, BOMB, RAILGUN];
+
+/// May `id` join the weapons already `picked`? It must not be there already,
+/// and its class must have room. One rule for the loadout screen, the random
+/// roll and the host's check.
+pub fn can_add(picked: &[u8], id: u8) -> bool {
+    ARSENAL.contains(&id)
+        && !picked.contains(&id)
+        && picked.len() < LOADOUT_SIZE
+        && picked.iter().filter(|&&p| class_of(p) == class_of(id)).count() < MAX_PER_CLASS
+}
+
+/// Is this an acceptable choice: the right number of different arsenal weapons,
+/// within the class limits? A loadout arrives from another player's machine, and
+/// nothing that comes from outside is trusted, so the host checks it before it
+/// touches the world.
 pub fn valid_loadout(ids: &[u8]) -> bool {
-    ids.len() == LOADOUT_SIZE
-        && ids.iter().all(|id| ARSENAL.contains(id))
-        && ids.iter().enumerate().all(|(i, id)| !ids[..i].contains(id))
+    ids.len() == LOADOUT_SIZE && ids.iter().enumerate().all(|(i, &id)| can_add(&ids[..i], id))
+}
+
+/// Five random weapons that obey the class limits: for players who would rather
+/// not pick the "best" ones. Shuffle the arsenal, then take weapons from the top
+/// while they fit. (The sim's own `Rng`, so a seed always rolls the same set.)
+pub fn random_loadout(rng: &mut Rng) -> Vec<u8> {
+    let mut deck = ARSENAL;
+    for i in (1..deck.len()).rev() {
+        deck.swap(i, rng.next_u32() as usize % (i + 1));
+    }
+    let mut picked = Vec::with_capacity(LOADOUT_SIZE);
+    for id in deck {
+        if can_add(&picked, id) {
+            picked.push(id);
+        }
+    }
+    picked
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -101,9 +170,6 @@ pub enum Special {
     /// many seconds. Players in it cannot steer or dash, and take damage (for
     /// whoever laid it) when they slide into a wall.
     Slick(f32, f32),
-    /// Splits in two, one each side of its heading, into this weapon. Where it
-    /// ends (a wall, or the end of its fuse) is where it splits.
-    Fork(u8),
     /// Where it lands, a black hole of this radius in px opens for this many
     /// seconds and pulls every player in reach towards its centre.
     Well(f32, f32),
@@ -148,7 +214,7 @@ pub struct WeaponDef {
     pub special: Special,
 }
 
-pub static WEAPONS: [WeaponDef; 23] = [
+pub static WEAPONS: [WeaponDef; 18] = [
     WeaponDef {
         name: "Neon Blaster",
         kind: Kind::Projectile,
@@ -477,25 +543,6 @@ pub static WEAPONS: [WeaponDef; 23] = [
         special: Special::None,
     },
     WeaponDef {
-        name: "Crackler",
-        kind: Kind::Projectile,
-        damage: 0.0,
-        speed: 420.0,
-        lifetime: 0.3,
-        cooldown: 1.0,
-        mag: 3,
-        reload: 3.2,
-        spread: 0.03,
-        range: 0.0,
-        blast_radius: 0.0,
-        blast_damage: 0.0,
-        knockback: 0.0,
-        tile_damage: 0,
-        pellets: 1,
-        bounce: false,
-        special: Special::Fork(CRACKLE_1),
-    },
-    WeaponDef {
         name: "Black Hole",
         kind: Kind::Projectile,
         damage: 0.0,
@@ -533,83 +580,42 @@ pub static WEAPONS: [WeaponDef; 23] = [
         bounce: false,
         special: Special::Stun(1.3, 0.5),
     },
-    // Not in anyone's loadout: what a Crackler shell becomes as it splits. Each
-    // generation is a little slower and has a shorter fuse, so the fan opens
-    // quickly; only the last one explodes.
-    WeaponDef {
-        name: "Crackle 1",
-        kind: Kind::Projectile,
-        damage: 0.0,
-        speed: 380.0,
-        lifetime: 0.22,
-        cooldown: 0.0,
-        mag: 0,
-        reload: 0.0,
-        spread: 0.0,
-        range: 0.0,
-        blast_radius: 0.0,
-        blast_damage: 0.0,
-        knockback: 0.0,
-        tile_damage: 0,
-        pellets: 1,
-        bounce: false,
-        special: Special::Fork(CRACKLE_2),
-    },
-    WeaponDef {
-        name: "Crackle 2",
-        kind: Kind::Projectile,
-        damage: 0.0,
-        speed: 340.0,
-        lifetime: 0.2,
-        cooldown: 0.0,
-        mag: 0,
-        reload: 0.0,
-        spread: 0.0,
-        range: 0.0,
-        blast_radius: 0.0,
-        blast_damage: 0.0,
-        knockback: 0.0,
-        tile_damage: 0,
-        pellets: 1,
-        bounce: false,
-        special: Special::Fork(CRACKLE_3),
-    },
-    WeaponDef {
-        name: "Crackle 3",
-        kind: Kind::Projectile,
-        damage: 0.0,
-        speed: 300.0,
-        lifetime: 0.18,
-        cooldown: 0.0,
-        mag: 0,
-        reload: 0.0,
-        spread: 0.0,
-        range: 0.0,
-        blast_radius: 0.0,
-        blast_damage: 0.0,
-        knockback: 0.0,
-        tile_damage: 0,
-        pellets: 1,
-        bounce: false,
-        special: Special::Fork(CRACKLE_4),
-    },
-    WeaponDef {
-        name: "Crackle 4",
-        kind: Kind::Projectile,
-        damage: 0.0,
-        speed: 300.0,
-        lifetime: 0.45,
-        cooldown: 0.0,
-        mag: 0,
-        reload: 0.0,
-        spread: 0.0,
-        range: 0.0,
-        blast_radius: 26.0,
-        blast_damage: 16.0,
-        knockback: 120.0,
-        tile_damage: 1,
-        pellets: 1,
-        bounce: false,
-        special: Special::None,
-    },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_arsenal_is_listed_class_by_class() {
+        // The loadout screen draws one column per class, straight from this order.
+        let classes: Vec<Class> = ARSENAL.iter().map(|&id| class_of(id)).collect();
+        let order: Vec<Class> = CLASSES.iter().flat_map(|&c| classes.iter().filter(move |&&x| x == c).copied()).collect();
+        assert_eq!(classes, order);
+        assert!(ARSENAL.iter().all(|&id| WEAPONS[id as usize].mag > 0), "only real weapons can be picked");
+    }
+
+    #[test]
+    fn a_loadout_is_five_different_weapons_with_room_in_their_class() {
+        assert!(valid_loadout(&DEFAULT_LOADOUT));
+        assert!(!valid_loadout(&[BLASTER, ROCKET]), "too few");
+        assert!(!valid_loadout(&[0, 1, 2, 3, 4, 5]), "too many");
+        assert!(!valid_loadout(&[BLASTER, BLASTER, ROCKET, BOMB, RAILGUN]), "a weapon twice");
+        assert!(!valid_loadout(&[BLASTER, ROCKET, BOMB, RAILGUN, BOMBLET]), "bomblets are not for picking");
+        assert!(!valid_loadout(&[BLASTER, ROCKET, BOMB, RAILGUN, 200]), "no such weapon");
+        assert!(!valid_loadout(&BOT_LOADOUT), "three guns: only bots may");
+        assert!(!valid_loadout(&[ROCKET, BOMB, CLUSTER, BLASTER, BUILD]), "three explosives");
+    }
+
+    #[test]
+    fn a_random_loadout_is_always_a_valid_one_and_varies() {
+        let mut rng = Rng::new(7);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let picked = random_loadout(&mut rng);
+            assert!(valid_loadout(&picked), "{picked:?}");
+            seen.extend(picked);
+        }
+        assert_eq!(seen.len(), ARSENAL.len(), "every weapon turns up sometime");
+    }
+}

@@ -156,7 +156,9 @@ fn draw_weapons(world: &World, me: usize) {
         let dark = Color::new(0.03, 0.03, 0.04, 1.0);
         if reloading {
             draw_rectangle(bar_x, bar_y, bar_w, 6.0, dark);
-            draw_rectangle(bar_x, bar_y, bar_w * (1.0 - weapon.reload / def.reload), 6.0, TEXT_DIM);
+            // Only the weapon in your hand reloads (see `step_player`): the
+            // others wait, and their bar is dim to say so.
+            draw_rectangle(bar_x, bar_y, bar_w * (1.0 - weapon.reload / def.reload), 6.0, if selected { mine } else { TEXT_DIM });
         } else if def.mag <= 8 {
             let gap = 3.0;
             let seg = (bar_w - gap * (def.mag as f32 - 1.0)) / def.mag as f32;
@@ -169,7 +171,7 @@ fn draw_weapons(world: &World, me: usize) {
             draw_rectangle(bar_x, bar_y, bar_w * weapon.ammo as f32 / def.mag as f32, 6.0, ammo_color);
         }
         if words && reloading {
-            draw_text("reloading", x + 6.0, y + 40.0, 14.0, TEXT_DIM);
+            draw_text(if selected { "reloading" } else { "paused" }, x + 6.0, y + 40.0, 14.0, TEXT_DIM);
         } else if words && def.mag > 8 {
             draw_text(&format!("{}/{}", weapon.ammo, def.mag), x + 6.0, y + 40.0, 14.0, name_color);
         }

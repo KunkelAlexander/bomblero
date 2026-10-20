@@ -85,9 +85,9 @@ Early but playable. Done so far:
 * A menu you play: the start screen is a small arena. Walk onto a hexagon to
   play offline, host or join, and try the weapons on the shooting range first.
 
-Planned (see [PLAN.md](PLAN.md)): synthesized sound and more effects, then a
-grapple hook, block building, five more weapons (black hole, digger, chain
-lightning, laser sweep, time bubble), three maps and a match flow. Not built yet.
+Planned (see [PLAN.md](PLAN.md)): more effects, and a few more weapons (digger,
+chain lightning, time bubble). There will be no grapple hook: the Teleport gun
+is the way to get around.
 
 ## Play it
 

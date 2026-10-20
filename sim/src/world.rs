@@ -89,8 +89,16 @@ const SLAM_MAX: f32 = 40.0;
 const MAX_DEPLOYABLES: usize = 12;
 /// How often a bouncing beam may turn (the laser): four straight pieces at most.
 const MAX_BOUNCES: usize = 3;
-/// A Crackler splits into two, this many radians either side of its heading.
-const FORK_ANGLE: f32 = 0.4;
+/// A kill heals the killer this much. Nothing else heals, so without it a
+/// winner of one fight meets the next fresh player at half health and has no
+/// reason to keep fighting; with it, aggression pays.
+const KILL_HEAL: f32 = 30.0;
+/// Bombs set off by another blast (see `chain_blasts`) go off this long after it:
+/// short enough to feel like one chain, long enough to see it run along a row.
+const CHAIN_FUSE: f32 = 0.12;
+/// After a stun ends, the Flashgun cannot stun you again for this long. Without
+/// it, a flash followed by the blaster (a 1.1 s kill) would be an unavoidable death.
+const STUN_IMMUNITY: f32 = 2.0;
 /// Pull of a black hole, in px/s per second, before it fades towards the edge.
 /// The usual `ACCEL` rule fights it: a walking player (220 px/s) is held inside
 /// about half the radius, and only a dash gets out.
@@ -137,6 +145,9 @@ pub struct Player {
     /// Seconds left stunned (Flashgun): cannot move, dash or shoot. The client
     /// also whites out that player's screen.
     pub stunned: f32,
+    /// Seconds left in which a flash does nothing (see `STUN_IMMUNITY`). It runs
+    /// from the moment of the flash, so it includes the stun itself.
+    pub stun_immune: f32,
 }
 
 impl Player {
@@ -223,6 +234,8 @@ pub struct World {
     /// Kills needed to win. A rule of this match, set by whoever creates it.
     pub score_limit: i32,
     events: Vec<Event>,
+    /// Where and how far the blasts of this tick reached, for `chain_blasts`.
+    blasts: Vec<(Vec2, f32)>,
     rng: Rng,
 }
 
@@ -249,6 +262,7 @@ impl World {
                 sheep: 0.0,
                 confused: 0.0,
                 stunned: 0.0,
+                stun_immune: 0.0,
             })
             .collect();
         World {
@@ -260,6 +274,7 @@ impl World {
             winner: None,
             score_limit: SCORE_LIMIT,
             events: Vec::new(),
+            blasts: Vec::new(),
             rng: Rng::new(seed),
         }
     }
@@ -321,9 +336,13 @@ impl World {
         }
 
         let p = &mut self.players[i];
-        for w in &mut p.weapons {
+        for (slot, w) in p.weapons.iter_mut().enumerate() {
             w.cooldown = (w.cooldown - DT).max(0.0);
-            if w.reload > 0.0 {
+            // A weapon reloads only in your hands. If it reloaded while you
+            // shot something else, you could empty the Nova and carry on with
+            // the blaster until it was back: its long reload would cost nothing.
+            // This way reloading is a choice, and a safe moment to make it.
+            if w.reload > 0.0 && slot == p.current {
                 w.reload -= DT;
                 if w.reload <= 0.0 {
                     w.reload = 0.0;
@@ -367,6 +386,7 @@ impl World {
         p.sheep = (p.sheep - DT).max(0.0);
         p.confused = (p.confused - DT).max(0.0);
         p.stunned = (p.stunned - DT).max(0.0);
+        p.stun_immune = (p.stun_immune - DT).max(0.0);
         if input.aim.is_finite() {
             p.aim = input.aim;
         }
@@ -662,7 +682,7 @@ impl World {
             let p = &self.players[v];
             let to = p.pos - origin;
             let dist = to.length();
-            if v == owner || !p.alive || p.invuln > 0.0 || dist > def.range || dist < 1.0 {
+            if v == owner || !p.alive || p.invuln > 0.0 || p.stun_immune > 0.0 || dist > def.range || dist < 1.0 {
                 continue;
             }
             let slack = (p.hit_radius() / dist).min(1.0).asin();
@@ -671,6 +691,7 @@ impl World {
                 continue;
             }
             self.players[v].stunned = secs;
+            self.players[v].stun_immune = secs + STUN_IMMUNITY;
             let pos = self.players[v].pos;
             self.events.push(Event::Status { victim: v as u8, weapon, pos });
         }
@@ -700,7 +721,15 @@ impl World {
         p.sheep = 0.0;
         p.confused = 0.0;
         p.stunned = 0.0;
-        p.weapons = p.weapons.iter().map(|w| full_weapon(w.id)).collect();
+        p.stun_immune = 0.0;
+        // A fresh start for the guns, but not for a weapon that is still
+        // reloading: dying must not be a free reload of the Nova. (Nothing is in
+        // your hands while you are dead, so such a reload waits, see `step_player`.)
+        for w in &mut p.weapons {
+            if w.reload == 0.0 {
+                *w = full_weapon(w.id);
+            }
+        }
         self.events.push(Event::Respawned { player: i as u8 });
     }
 
@@ -728,6 +757,10 @@ impl World {
             p.deaths += 1;
             // Killing yourself costs a point; killing someone else earns one.
             self.players[source].kills += if victim == source { -1 } else { 1 };
+            if victim != source && self.players[source].alive {
+                let killer = &mut self.players[source];
+                killer.hp = (killer.hp + KILL_HEAL).min(MAX_HP);
+            }
             self.events.push(Event::Died { victim: victim as u8, killer: source as u8, pos });
             let score = self.players[source].kills;
             if score >= self.score_limit && self.winner.is_none() {
@@ -795,7 +828,7 @@ impl World {
                 // wall or at the end of its fuse. Bursting on someone put all
                 // seven bomblets on them at once: a one-shot kill up close,
                 // which is not what an area weapon is for.
-                let passes_players = matches!(def.special, Special::Cluster(..) | Special::Fork(..));
+                let passes_players = matches!(def.special, Special::Cluster(..));
                 let hit = (0..self.players.len()).find(|&j| {
                     !passes_players
                         && j != pr.owner as usize
@@ -813,7 +846,7 @@ impl World {
                 // orbs land and rockets blow up where they are.
                 if def.blast_radius > 0.0 || matches!(
                     def.special,
-                    Special::Cluster(..) | Special::Fork(..) | Special::Teleport | Special::Slick(..) | Special::Well(..)
+                    Special::Cluster(..) | Special::Teleport | Special::Slick(..) | Special::Well(..)
                 ) {
                     self.impact(&pr, def, dir, None, None);
                 }
@@ -824,6 +857,35 @@ impl World {
         // A burst this tick put its children into the (emptied) list: keep them.
         keep.append(&mut self.projectiles);
         self.projectiles = keep;
+        self.chain_blasts();
+    }
+
+    /// Bomberman's chain reaction: a blast sets off every bomb it can see. Such a
+    /// bomb is not detonated on the spot but gets a short fuse (`CHAIN_FUSE`), so
+    /// the explosions run along a row of bombs one after another instead of all
+    /// in the same tick. The bomb keeps its owner, so a chain started by your
+    /// enemy's bomb still scores for whoever laid the bomb that finally gets you.
+    /// A "bomb" is a weapon that is dropped, not thrown, and explodes (`speed` 0).
+    ///
+    /// Done after the projectile loop and not inside `explode`, because while the
+    /// loop runs the other projectiles are not in `self.projectiles` (see
+    /// `step_projectiles`), so `explode` cannot reach them.
+    fn chain_blasts(&mut self) {
+        let blasts = std::mem::take(&mut self.blasts);
+        for (at, radius) in blasts {
+            for i in 0..self.projectiles.len() {
+                let pr = &self.projectiles[i];
+                let def = &WEAPONS[pr.weapon as usize];
+                if def.speed == 0.0
+                    && def.blast_radius > 0.0
+                    && pr.life > CHAIN_FUSE
+                    && pr.pos.distance(at) < radius
+                    && self.map.line_of_sight(at, pr.pos)
+                {
+                    self.projectiles[i].life = CHAIN_FUSE;
+                }
+            }
+        }
     }
 
     /// Homing: turn the velocity towards the nearest living enemy, by at most
@@ -847,26 +909,6 @@ impl World {
     /// `radius` fits. A projectile that hit a wall is a few pixels inside it.
     fn free_point(&self, pos: Vec2, dir: Vec2, radius: f32) -> Option<Vec2> {
         (0..20).map(|k| pos - dir * (2.0 * k as f32)).find(|&p| !self.map.circle_hits_wall(p, radius))
-    }
-
-    /// Crackler: the shell splits into two children, one each side of the way it
-    /// was flying, with a little random twist (from the sim's own `rng`, so every
-    /// machine splits the same way). Each child is the next generation's row of
-    /// the weapon table, which splits again, and so four splits make sixteen.
-    fn fork(&mut self, pr: &Projectile, dir: Vec2, child: u8) {
-        let def = &WEAPONS[child as usize];
-        let at = self.free_point(pr.pos, dir, PROJECTILE_RADIUS).unwrap_or(pr.pos);
-        let heading = dir.y.atan2(dir.x);
-        for side in [-1.0, 1.0] {
-            let a = heading + side * FORK_ANGLE + self.rng.range(-0.1, 0.1);
-            self.projectiles.push(Projectile {
-                pos: at,
-                vel: vec2(a.cos(), a.sin()) * def.speed,
-                weapon: child,
-                owner: pr.owner,
-                life: def.lifetime,
-            });
-        }
     }
 
     /// Cluster: the shell splits into `count` children, spread evenly around the
@@ -917,7 +959,6 @@ impl World {
         match def.special {
             Special::Cluster(count, child) => return self.burst(pr, dir, count, child),
             Special::Teleport => return self.teleport(pr, dir, victim),
-            Special::Fork(child) => return self.fork(pr, dir, child),
             Special::Slick(..) | Special::Well(..) => {
                 // Pool where it landed, on the side it came from (see `explode`).
                 let at = self.free_point(pr.pos, dir, PROJECTILE_RADIUS).unwrap_or(pr.pos);
@@ -968,6 +1009,7 @@ impl World {
     /// from that blast: it absorbs exactly one hit.
     fn explode(&mut self, pos: Vec2, def: &WeaponDef, owner: usize) {
         self.events.push(Event::Explosion { pos, radius: def.blast_radius });
+        self.blasts.push((pos, def.blast_radius));
 
         for v in 0..self.players.len() {
             let offset = self.players[v].pos - pos;
@@ -1018,9 +1060,8 @@ mod tests {
     use super::*;
     use crate::tilemap::MAP_GRID;
     use crate::weapons::{
-        ARSENAL, BLACKHOLE, BLASTER, BOMB, BOMBLET, BOUNCER, BUILD, CLUSTER, CONFUSER, CRACKLE_4, CRACKLER, FLASH, LASER,
-        MIRROR, NOVA, OIL, RAILGUN, ROCKET, SHEEP, SWARM,
-        TELEPORT,
+        ARSENAL, BLACKHOLE, BLASTER, BOMB, BOMBLET, BOUNCER, BUILD, CLUSTER, CONFUSER, FLASH, LASER, MIRROR, NOVA, OIL,
+        RAILGUN, ROCKET, SHEEP, SWARM, TELEPORT,
     };
 
     // These tests need no window, GPU or sound: the payoff of keeping the sim
@@ -1364,17 +1405,6 @@ mod tests {
     }
 
     #[test]
-    fn only_five_different_arsenal_weapons_are_a_loadout() {
-        use crate::weapons::{valid_loadout, DEFAULT_LOADOUT};
-        assert!(valid_loadout(&DEFAULT_LOADOUT));
-        assert!(!valid_loadout(&[BLASTER, ROCKET]), "too few");
-        assert!(!valid_loadout(&[0, 1, 2, 3, 4, 5]), "too many");
-        assert!(!valid_loadout(&[BLASTER, BLASTER, ROCKET, BOMB, RAILGUN]), "a weapon twice");
-        assert!(!valid_loadout(&[BLASTER, ROCKET, BOMB, RAILGUN, BOMBLET]), "bomblets are not for picking");
-        assert!(!valid_loadout(&[BLASTER, ROCKET, BOMB, RAILGUN, 200]), "no such weapon");
-    }
-
-    #[test]
     fn oversized_move_input_is_clamped() {
         let mut w = two_player_world();
         w.players[1].pos = tile_center(30, 10);
@@ -1640,7 +1670,7 @@ mod tests {
         assert!(w.deployables.is_empty());
     }
 
-    // ---- the second set of gadgets ----------------------------------------------
+    // ---- black hole and flashgun --------------------------------------------------
 
     /// An empty arena with a wall all round: no bricks, no obstacles.
     fn arena() -> Tilemap {
@@ -1659,9 +1689,9 @@ mod tests {
 "))
     }
 
-    /// Slots: 0 Bounce Laser, 1 Crackler, 2 Black Hole, 3 Flashgun, 4 Blaster.
+    /// Slots: 0 Bounce Laser, 1 Black Hole, 2 Flashgun, 3 Blaster.
     fn gadget_arena() -> World {
-        let mut w = World::new(arena(), 2, &[LASER, CRACKLER, BLACKHOLE, FLASH, BLASTER], 1);
+        let mut w = World::new(arena(), 2, &[LASER, BLACKHOLE, FLASH, BLASTER], 1);
         w.players[0].pos = tile_center(5, 18);
         w.players[1].pos = tile_center(30, 3);
         w
@@ -1717,21 +1747,6 @@ mod tests {
     }
 
     #[test]
-    fn a_crackler_shell_ends_as_sixteen_sparks() {
-        let mut w = gadget_arena();
-        w.players[0].pos = tile_center(5, 10); // mid-height: the fan has room to open
-        let mut most = 0;
-        w.step(&[Input { fire: true, weapon: 1, ..Default::default() }]);
-        for _ in 0..120 {
-            w.step(&[]);
-            let sparks = w.projectiles.iter().filter(|p| p.weapon == CRACKLE_4).count();
-            most = most.max(sparks);
-        }
-        assert_eq!(most, 16);
-        assert!(w.projectiles.is_empty(), "and every one of them went off");
-    }
-
-    #[test]
     fn a_black_hole_pulls_players_in_and_holds_them() {
         let mut w = gadget_arena();
         let centre = tile_center(20, 10);
@@ -1754,7 +1769,7 @@ mod tests {
     #[test]
     fn a_black_hole_orb_opens_where_it_lands() {
         let mut w = gadget_arena();
-        fire_once(&mut w, 0, 2, 0.0);
+        fire_once(&mut w, 0, 1, 0.0);
         for _ in 0..40 {
             w.step(&[]); // the orb flies for a second before it lands
         }
@@ -1766,23 +1781,23 @@ mod tests {
     fn the_flashgun_stuns_a_player_in_front_and_only_in_front() {
         let mut w = gadget_arena();
         w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
-        fire_once(&mut w, 0, 3, 0.0);
+        fire_once(&mut w, 0, 2, 0.0);
         assert!(w.players[1].stunned > 0.0);
 
         let mut w = gadget_arena();
         w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
-        fire_once(&mut w, 0, 3, std::f32::consts::PI);
+        fire_once(&mut w, 0, 2, std::f32::consts::PI);
         assert_eq!(w.players[1].stunned, 0.0, "behind the shooter");
 
         let mut w = gadget_arena();
         w.players[1].pos = w.players[0].pos + vec2(500.0, 0.0);
-        fire_once(&mut w, 0, 3, 0.0);
+        fire_once(&mut w, 0, 2, 0.0);
         assert_eq!(w.players[1].stunned, 0.0, "out of range");
 
         let mut w = gadget_arena();
         w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
         w.map.set(8, 18, Tile::Brick(BRICK_HP));
-        fire_once(&mut w, 0, 3, 0.0);
+        fire_once(&mut w, 0, 2, 0.0);
         assert_eq!(w.players[1].stunned, 0.0, "behind a brick");
     }
 
@@ -1791,7 +1806,7 @@ mod tests {
         let mut w = gadget_arena();
         w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
         w.players[1].weapons = vec![full_weapon(BLASTER)];
-        fire_once(&mut w, 0, 3, 0.0);
+        fire_once(&mut w, 0, 2, 0.0);
         let stuck_at = w.players[1].pos;
         let mag = WEAPONS[BLASTER as usize].mag;
         for _ in 0..30 {
@@ -1805,5 +1820,120 @@ mod tests {
             w.step(&[]);
         }
         assert_eq!(w.players[1].stunned, 0.0);
+    }
+
+    // ---- the rules of play: healing, chains, stun immunity, reloading ---------------
+
+    #[test]
+    fn a_kill_heals_the_killer_but_not_past_full_health() {
+        let mut w = two_player_world();
+        w.players[0].hp = 50.0;
+        w.players[1].hp = 5.0;
+        fire_once(&mut w, 0, 0, 0.0);
+        assert!(!w.players[1].alive);
+        assert_eq!(w.players[0].hp, 50.0 + KILL_HEAL);
+
+        let mut w = two_player_world();
+        w.players[0].hp = 90.0;
+        w.players[1].hp = 5.0;
+        fire_once(&mut w, 0, 0, 0.0);
+        assert_eq!(w.players[0].hp, MAX_HP);
+    }
+
+    #[test]
+    fn a_hit_that_does_not_kill_heals_nobody() {
+        let mut w = two_player_world();
+        w.players[0].hp = 50.0;
+        fire_once(&mut w, 0, 0, 0.0);
+        assert!(w.players[1].alive);
+        assert_eq!(w.players[0].hp, 50.0);
+    }
+
+    #[test]
+    fn a_blast_sets_off_the_bombs_it_can_see_and_only_those() {
+        let mut w = World::new(arena(), 2, &[BOMB], 1);
+        w.players[0].pos = tile_center(30, 3);
+        w.players[1].pos = tile_center(30, 18);
+        w.map.set(8, 10, Tile::Solid);
+        let bomb = |x: i32, life: f32| Projectile { pos: tile_center(x, 10), vel: Vec2::ZERO, weapon: BOMB, owner: 0, life };
+        // A is about to go off. B is near it in the open, C near it behind a
+        // wall, D far away. All but A have a full fuse.
+        let full = WEAPONS[BOMB as usize].lifetime;
+        w.projectiles = vec![bomb(10, 0.02), bomb(13, full), bomb(7, full), bomb(25, full)];
+        for _ in 0..3 {
+            w.step(&[]);
+        }
+        let life = |w: &World, x: i32| w.projectiles.iter().find(|p| p.pos == tile_center(x, 10)).map(|p| p.life);
+        assert_eq!(life(&w, 10), None, "A went off");
+        assert!(life(&w, 13).unwrap() <= CHAIN_FUSE, "B was set off");
+        assert!(life(&w, 7).unwrap() > 1.0, "a wall protects C");
+        assert!(life(&w, 25).unwrap() > 1.0, "D is out of reach");
+        // And B really does go off soon after, well before its own fuse.
+        for _ in 0..10 {
+            w.step(&[]);
+        }
+        assert_eq!(life(&w, 13), None);
+        assert!(life(&w, 7).is_some() && life(&w, 25).is_some());
+    }
+
+    #[test]
+    fn a_stun_is_followed_by_a_while_of_immunity() {
+        let mut w = gadget_arena();
+        w.players[1].pos = w.players[0].pos + vec2(200.0, 0.0);
+        fire_once(&mut w, 0, 2, 0.0);
+        assert!(w.players[1].stunned > 0.0);
+        // Wait out the stun; the second flash (the gun is ready again) does nothing.
+        for _ in 0..(1.4 / DT) as i32 {
+            w.step(&[]);
+        }
+        assert_eq!(w.players[1].stunned, 0.0);
+        fire_once(&mut w, 0, 2, 0.0);
+        assert_eq!(w.players[1].stunned, 0.0, "immune");
+        // The immunity runs out too.
+        for _ in 0..(STUN_IMMUNITY / DT) as i32 {
+            w.step(&[]);
+        }
+        assert_eq!(w.players[1].stun_immune, 0.0);
+    }
+
+    #[test]
+    fn a_weapon_reloads_only_while_it_is_in_your_hands() {
+        let mut w = World::new(arena(), 2, &[NOVA, BLASTER], 1);
+        w.players[0].pos = tile_center(3, 10);
+        w.players[1].pos = tile_center(30, 3);
+        w.step(&[Input { fire: true, weapon: 0, ..Default::default() }]);
+        let nova = |w: &World| (w.players[0].weapons[0].ammo, w.players[0].weapons[0].reload);
+        assert_eq!(nova(&w).0, 0);
+        assert!(nova(&w).1 > 7.9);
+
+        // Long enough for the whole reload, but with the blaster in hand.
+        for _ in 0..(9.0 / DT) as i32 {
+            w.step(&[Input { weapon: 1, ..Default::default() }]);
+        }
+        assert_eq!(nova(&w).0, 0, "no reload in the pocket");
+        assert!(nova(&w).1 > 7.9);
+
+        // Back in hand it reloads, and it carries on where it left off.
+        for _ in 0..(8.2 / DT) as i32 {
+            w.step(&[Input { weapon: 0, ..Default::default() }]);
+        }
+        assert_eq!(nova(&w).0, WEAPONS[NOVA as usize].mag);
+    }
+
+    #[test]
+    fn dying_does_not_reload_a_spent_weapon_but_refills_the_rest() {
+        let mut w = World::new(arena(), 2, &[NOVA, BLASTER], 1);
+        w.players[0].pos = tile_center(3, 10);
+        w.players[1].pos = tile_center(30, 3);
+        w.step(&[Input { fire: true, weapon: 0, ..Default::default() }]);
+        w.players[0].weapons[1].ammo = 3;
+        w.players[0].alive = false;
+        w.players[0].respawn_timer = 0.0;
+        w.step(&[]);
+        assert!(w.players[0].alive);
+        let (nova, blaster) = (&w.players[0].weapons[0], &w.players[0].weapons[1]);
+        assert_eq!(nova.ammo, 0, "the Nova is still spent");
+        assert!(nova.reload > 7.9);
+        assert_eq!(blaster.ammo, WEAPONS[BLASTER as usize].mag, "the blaster starts full");
     }
 }

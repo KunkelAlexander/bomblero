@@ -175,3 +175,12 @@ server/Dockerfile, render.yaml, fly.toml
 - PLAY and HOST go menu -> **match setup** (`game/src/setup.rs`) -> armory -> match; JOIN skips the setup, because the host's rules are the match's. Settings are remembered between matches like the loadout.
 - Settings: map, bots (1-3, offline only; a room for friends always has 4 seats, bots hold the empty ones), first to 5/10/15/25. `protocol::Rules { map, score_limit }` travels in the `Welcome`; the map is sent as an index into `sim::tilemap::MAPS` (Type Object, like `WeaponDef`), the replica builds that map and lays the current tiles over it. `World::score_limit` replaces the constant (which stays as the default).
 - Maps: **Grid**; **Anthill** (earth everywhere, ant tunnels, rock layers so digging opens galleries instead of flattening the map); **Pinball** (open, no bricks, single-pillar bumpers, staircase slingshots, a diamond in the middle; cover is what you build). Test: every map has >= 4 spawns, all reachable from each other without digging, and bots score on every map.
+
+## Addendum (game design review)
+- **Grapple dropped for good:** the Teleport gun already covers "get somewhere fast", and the dash plus blast knockback are the movement toys. (The grapple lines above are history.)
+- **Kill heals the killer 30 HP** (`KILL_HEAL`): nothing else heals, so a won fight no longer leaves you worse off for the next one.
+- **Chain reactions:** a blast gives every bomb it can see a 0.12 s fuse (`World::chain_blasts`), so a row of bombs goes off one after another. Bricks the blast has just destroyed no longer block the view.
+- **Flashgun immunity:** after a stun, 2 s in which a flash does nothing (`STUN_IMMUNITY`): flash + blaster was an unavoidable kill.
+- **Reloading is a choice:** a weapon reloads only while it is the selected one, and not at all while you are dead. Before, you could empty the Nova and carry on with the blaster until it was back. Dying also no longer reloads a spent weapon (the rest still start full). The HUD shows a waiting reload as "paused".
+- **Loadout rules:** the arsenal has four kinds (Guns, Explosives, Tools, Tricks; `weapons::Class`) and a loadout holds at most two of each, checked by `weapons::can_add` in the armory, in `random_loadout` and in the host. The armory shows one column per kind and has a RANDOM button (R). Bots keep `BOT_LOADOUT` (three guns), which only they may.
+- **Crackler removed** (it overlapped the Cluster; its five table rows and the fork mechanic went with it). Seventeen weapons are left.
