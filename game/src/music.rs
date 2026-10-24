@@ -1,16 +1,7 @@
-// The tune: a 16-bar punk rock loop, played by code instead of a band.
-//
-// It is a score (chords, a lead melody, a drum pattern) turned into samples with
-// the oscillators from synth.rs. Like a MIDI file it stores *which notes*, not
-// sound, and the instruments below decide how they sound. The whole loop is
-// rendered once at startup (a fraction of a second) and then simply looped.
-//
-//   bars 1-8   verse:  palm-muted eighth-note chugging on power chords
-//   bars 9-16  chorus: open chords, and the lead hook on top
-//
-// 176 BPM, key of E. Two things to change if you want a different tune: the
-// CHORDS and LEAD tables below. Run `cargo test -p game dump -- --ignored` to
-// write the loop to target/audio/ and listen to it without starting the game.
+// A 16-bar combat loop: low C gallops and a four-bar sequence of sustained answers.
+// 176 BPM. Replace the original music module with this file.
+// Uses the existing synth.rs API. To audition outside the game:
+// cargo test -p game dump -- --ignored
 
 use crate::synth::{layer, render, soft_clip, LowPass, Samples, Wave, RATE};
 
@@ -19,88 +10,63 @@ const BPM: f32 = 176.0;
 const STEP: f32 = 60.0 / BPM / 4.0;
 const BARS: usize = 16;
 
-// MIDI note numbers of the chord roots (E2 = 40; every +1 is a semitone).
-const E2: u8 = 40;
-const A2: u8 = 45;
+const C2: u8 = 36;
+const G2: u8 = 43;
+const GS2: u8 = 44;
 const B2: u8 = 47;
 const C3: u8 = 48;
-const D3: u8 = 50;
+const D4: u8 = 62;
+const DS4: u8 = 63;
 
-/// The root of the power chord (root + fifth + octave) in each bar.
-const CHORDS: [u8; BARS] = [
-    E2, E2, C3, D3, E2, E2, C3, B2, // verse
-    A2, B2, E2, E2, A2, B2, E2, B2, // chorus: IV - V - I, the most punk move there is
-];
+/// One shared score keeps guitar and bass locked together.
+#[derive(Clone, Copy)]
+struct RiffHit {
+    step: usize,
+    midi: u8,
+    gain: f32,
+    answer: bool,
+    duration: f32,
+}
 
-/// The lead melody, eight tokens per bar (eighth notes): a note name, `.` for a
-/// rest, `-` to keep holding the previous note. Silent in the verse so the
-/// chorus hits harder when the hook arrives.
-const LEAD: [&str; BARS] = [
-    "", "", "", "", "", "", "", "", //
-    "E5 - E5 E5 C#5 - B4 -",
-    "B4 - B4 B4 C#5 - D#5 -",
-    "E5 - - - B4 - G#4 -",
-    "G#4 - B4 - E5 - - .",
-    "E5 - E5 E5 C#5 - B4 -",
-    "B4 - B4 B4 C#5 - D#5 -",
-    "E5 - F#5 - G#5 - B5 -", // the climb
-    "B5 - - - - - . .",
-];
+fn riff_hits() -> Vec<RiffHit> {
+    let mut hits = Vec::new();
+    for bar in 0..BARS {
+        // Every fourth bar leaves beat 3 empty before the answer.
+        let beats = if bar % 4 == 3 { 2 } else { 3 };
+        for beat in 0..beats {
+            for (offset, gain) in [(0, 1.0), (2, 0.68), (3, 0.78)] {
+                hits.push(RiffHit {
+                    step: bar * 16 + beat * 4 + offset,
+                    midi: C2,
+                    gain,
+                    answer: false,
+                    duration: STEP * 0.72,
+                });
+            }
+        }
+        let answer = match bar % 4 {
+            0 => [G2, GS2],
+            1 => [C3, B2],
+            2 => [DS4, D4],
+            _ => [GS2, G2],
+        };
+        for (offset, midi) in [12, 14].iter().copied().zip(answer) {
+            hits.push(RiffHit {
+                step: bar * 16 + offset,
+                midi,
+                gain: if offset == 14 { 1.1 } else { 0.9 },
+                answer: true,
+                duration: STEP * if bar % 4 == 3 && offset == 14 { 0.85 } else { 1.95 },
+            });
+        }
+    }
+    hits
+}
 
-/// Where the drums hit within a bar of 16 steps.
-const KICK: [usize; 3] = [0, 8, 10];
 const SNARE: [usize; 2] = [4, 12];
-/// The last bar of each phrase swaps the beat for a snare roll.
-const FILL_SNARE: [usize; 6] = [8, 10, 12, 13, 14, 15];
 
 fn hz(midi: f32) -> f32 {
     440.0 * 2f32.powf((midi - 69.0) / 12.0)
-}
-
-struct Note {
-    /// Start, in 16th-note steps from the beginning of the loop.
-    step: usize,
-    midi: u8,
-    /// Length in steps.
-    len: usize,
-}
-
-/// "C#5" -> 73 (a MIDI note number).
-fn note_number(name: &str) -> u8 {
-    let mut chars = name.chars();
-    let letter = chars.next().expect("empty note name");
-    let mut semitone = match letter {
-        'C' => 0,
-        'D' => 2,
-        'E' => 4,
-        'F' => 5,
-        'G' => 7,
-        'A' => 9,
-        'B' => 11,
-        _ => panic!("bad note name {name}"),
-    };
-    let mut rest = chars.as_str();
-    if let Some(r) = rest.strip_prefix('#') {
-        semitone += 1;
-        rest = r;
-    }
-    let octave: u8 = rest.parse().expect("bad octave");
-    (octave + 1) * 12 + semitone
-}
-
-fn lead_notes() -> Vec<Note> {
-    let mut notes: Vec<Note> = Vec::new();
-    for (bar, tokens) in LEAD.iter().enumerate() {
-        for (i, token) in tokens.split_whitespace().enumerate() {
-            let step = bar * 16 + i * 2;
-            match token {
-                "." => {}
-                "-" => notes.last_mut().expect("a hold needs a note before it").len += 2,
-                name => notes.push(Note { step, midi: note_number(name), len: 2 }),
-            }
-        }
-    }
-    notes
 }
 
 /// Samples in the whole loop.
@@ -152,23 +118,31 @@ fn power_chord(root: u8, tau: f32) -> Samples {
     out
 }
 
+/// Trim the exponential tail with a short release to separate fast attacks.
+fn gate(sound: &mut Samples, seconds: f32) {
+    let len = ((seconds * RATE as f32) as usize).min(sound.len());
+    sound.truncate(len);
+    let release = (0.004 * RATE as f32).max(1.0);
+    for (i, sample) in sound.iter_mut().enumerate() {
+        *sample *= ((len - i) as f32 / release).min(1.0);
+    }
+}
+
 fn guitar_track(n: usize) -> Samples {
     let mut track = vec![0.0; n];
-    // Pattern: Flyweight, in spirit: each bar renders its three kinds of
-    // strum once and stamps them on every eighth note.
-    for (bar, &root) in CHORDS.iter().enumerate() {
-        let (muted, accent, open) = (power_chord(root, 0.045), power_chord(root, 0.20), power_chord(root, 0.12));
-        for eighth in 0..8 {
-            let step = bar * 16 + eighth * 2;
-            let strum = if bar >= 8 {
-                &open
-            } else if eighth == 0 {
-                &accent
-            } else {
-                &muted
-            };
-            stamp(&mut track, at(step), strum, 1.0);
-        }
+    for hit in riff_hits() {
+        // Root and octave for low chugs; full power chords for answers.
+        let mut sound = if hit.answer {
+            power_chord(hit.midi, 0.14)
+        } else {
+            render(&[
+                layer(Wave::Saw, hz(C2 as f32), hz(C2 as f32), 0.065, 3.0, 0.6),
+                layer(Wave::Saw, hz((C2 + 12) as f32), hz((C2 + 12) as f32), 0.065, 3.0, 0.25),
+            ])
+        };
+        gate(&mut sound, hit.duration);
+        let lift = if hit.step / 16 >= 8 { 1.12 } else { 1.0 };
+        stamp(&mut track, at(hit.step), &sound, hit.gain * lift);
     }
     distort(&mut track, 5.0, 3500.0);
     track
@@ -176,12 +150,19 @@ fn guitar_track(n: usize) -> Samples {
 
 fn bass_track(n: usize) -> Samples {
     let mut track = vec![0.0; n];
-    for (bar, &root) in CHORDS.iter().enumerate() {
-        // A saw for bite, a sine for weight, both on the chord's root.
-        let note = render(&[layer(Wave::Saw, hz(root as f32), hz(root as f32), 0.16, 1.5, 0.35), layer(Wave::Sine, hz(root as f32), hz(root as f32), 0.16, 1.5, 0.45)]);
-        for eighth in 0..8 {
-            stamp(&mut track, at(bar * 16 + eighth * 2), &note, 1.0);
+    for hit in riff_hits() {
+        // Keep bass under the upper answers instead of leaping with them.
+        let mut midi = if hit.answer { hit.midi - 12 } else { C2 - 12 };
+        while midi >= C2 {
+            midi -= 12;
         }
+        let frequency = hz(midi as f32);
+        let mut sound = render(&[
+            layer(Wave::Saw, frequency, frequency, 0.10, 2.0, 0.3),
+            layer(Wave::Sine, frequency, frequency, 0.10, 2.0, 0.55),
+        ]);
+        gate(&mut sound, hit.duration);
+        stamp(&mut track, at(hit.step), &sound, hit.gain);
     }
     let mut lp = LowPass::new();
     for s in &mut track {
@@ -209,32 +190,27 @@ fn drum_track(n: usize) -> Samples {
     let hat = highpass(render(&[layer(Wave::Noise, 12000.0, 12000.0, 0.04, 3.0, 0.5)]));
     let crash = highpass(render(&[layer(Wave::Noise, 12000.0, 9000.0, 1.2, 2.0, 0.5)]));
     for bar in 0..BARS {
-        let fill = bar % 8 == 7;
         let first = bar * 16;
-        if bar % 8 == 0 {
-            stamp(&mut track, at(first), &crash, 0.6);
+        if bar % 4 == 0 {
+            stamp(&mut track, at(first), &crash, 0.45);
         }
-        if fill {
-            // Same kick on 1 and 3, then a roll up to the next crash.
-            for &s in &KICK[..2] {
-                stamp(&mut track, at(first + s), &kick, 1.0);
-            }
-            for &s in &FILL_SNARE {
-                stamp(&mut track, at(first + s), &snare, 0.8);
-            }
-            for s in [0, 2, 4, 6] {
-                stamp(&mut track, at(first + s), &hat, 0.5);
-            }
-        } else {
-            for &s in &KICK {
-                stamp(&mut track, at(first + s), &kick, 1.0);
-            }
-            for &s in &SNARE {
-                stamp(&mut track, at(first + s), &snare, 0.9);
-            }
-            for s in (0..16).step_by(2) {
-                // Louder on the beat than between.
-                stamp(&mut track, at(first + s), &hat, if s % 4 == 0 { 0.5 } else { 0.3 });
+        // Reinforce selected gallops; leave room for the snare and answers.
+        let kicks: &[usize] = if bar % 4 == 3 { &[0, 2, 6, 14] } else { &[0, 2, 6, 8, 10] };
+        for &step in kicks {
+            stamp(&mut track, at(first + step), &kick, 1.0);
+        }
+        // Four bars of half-time near the end give the riff a heavier turn.
+        let snares: &[usize] = if (12..15).contains(&bar) { &[8] } else { &SNARE };
+        for &step in snares {
+            stamp(&mut track, at(first + step), &snare, 0.9);
+        }
+        for step in (0..16).step_by(2) {
+            stamp(&mut track, at(first + step), &hat,
+                if step % 4 == 0 { 0.42 } else { 0.24 });
+        }
+        if bar == 7 || bar == 15 {
+            for step in [13, 15] {
+                stamp(&mut track, at(first + step), &snare, 0.55);
             }
         }
     }
@@ -243,9 +219,12 @@ fn drum_track(n: usize) -> Samples {
 
 fn lead_track(n: usize) -> Samples {
     let mut track = vec![0.0; n];
-    for note in lead_notes() {
-        let len = (note.len as f32 * STEP * RATE as f32) as usize;
-        let base = hz(note.midi as f32);
+    // Only two brief high answers per loop; the rhythm remains the hook.
+    for (step, midi) in [(7 * 16 + 12, GS2 + 24), (7 * 16 + 14, G2 + 24),
+                         (15 * 16 + 12, GS2 + 24), (15 * 16 + 14, G2 + 24)] {
+        let duration = if step % 16 == 14 { 0.85 } else { 1.95 };
+        let len = (STEP * duration * RATE as f32) as usize;
+        let base = hz(midi as f32);
         let mut phase = 0.0f32;
         let mut out = vec![0.0; len];
         for (i, o) in out.iter_mut().enumerate() {
@@ -259,7 +238,7 @@ fn lead_track(n: usize) -> Samples {
             let release = ((len - i) as f32 / (0.04 * RATE as f32)).min(1.0);
             *o = x * attack * release * 0.22;
         }
-        stamp(&mut track, at(note.step), &out, 1.0);
+        stamp(&mut track, at(step), &out, 1.0);
     }
     let mut lp = LowPass::new();
     for s in &mut track {
@@ -287,23 +266,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn note_names_become_midi_numbers() {
-        assert_eq!(note_number("A4"), 69);
-        assert_eq!(note_number("E4"), 64);
-        assert_eq!(note_number("C#5"), 73);
-        assert_eq!(note_number("B5"), 83);
-    }
-
-    #[test]
-    fn the_hook_has_the_notes_it_should() {
-        let notes = lead_notes();
-        // Nothing before the chorus.
-        assert!(notes.iter().all(|n| n.step >= 8 * 16));
-        // "E5 - E5 E5 ..." : a held note is one note, twice as long.
-        assert_eq!((notes[0].midi, notes[0].len), (76, 4));
-        assert_eq!(notes[1].midi, 76);
-        // No note runs past the end of the loop.
-        assert!(notes.iter().all(|n| n.step + n.len <= BARS * 16));
+    fn riff_has_gallops_and_four_distinct_answers() {
+        let hits = riff_hits();
+        let steps: Vec<_> = hits.iter().take(3).map(|h| h.step).collect();
+        assert_eq!(steps, [0, 2, 3]);
+        for bar in 0..BARS {
+            let answer: Vec<_> = hits.iter()
+                .filter(|h| h.step / 16 == bar && h.answer)
+                .map(|h| (h.step % 16, h.midi)).collect();
+            let expected = [[G2, GS2], [C3, B2], [DS4, D4], [GS2, G2]][bar % 4];
+            assert_eq!(answer, [(12, expected[0]), (14, expected[1])]);
+        }
+        assert!(hits.iter().all(|h| h.step < BARS * 16));
+        assert!(!hits.iter().any(|h| h.step / 16 % 4 == 3 && (8..12).contains(&(h.step % 16))));
     }
 
     #[test]
